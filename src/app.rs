@@ -315,10 +315,22 @@ impl PosterLauncherApp {
             }
         };
 
-        match player::launch_vlc(&self.config.vlc_path, &stream_url, &item.title) {
+        match player::launch_vlc(
+            &self.config.vlc_path,
+            &stream_url,
+            &item.title,
+            item.view_offset,
+        ) {
             Ok(()) => {
                 self.error_text = None;
-                self.status_text = format!("Launched VLC for {}", item.title);
+                self.status_text = match item.view_offset {
+                    Some(offset_ms) if offset_ms >= 1_000 => format!(
+                        "Launched VLC for {} at {}",
+                        item.title,
+                        format_resume_time(offset_ms)
+                    ),
+                    _ => format!("Launched VLC for {}", item.title),
+                };
             }
             Err(error) => self.error_text = Some(error.to_string()),
         }
@@ -330,13 +342,37 @@ impl eframe::App for PosterLauncherApp {
         self.process_worker_events(ctx);
 
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
+            let mut any_text_field_has_focus = false;
+            let mut ime_purpose = egui::viewport::IMEPurpose::Normal;
+
             ui.horizontal_wrapped(|ui| {
                 ui.label("Plex URL");
-                ui.text_edit_singleline(&mut self.config.server_url);
+                let server_response = ui.add_sized(
+                    [300.0, 0.0],
+                    egui::TextEdit::singleline(&mut self.config.server_url)
+                        .id_source("config_server_url"),
+                );
+                any_text_field_has_focus |= server_response.has_focus();
+
                 ui.label("Token");
-                ui.add(egui::TextEdit::singleline(&mut self.config.token).password(true));
+                let token_response = ui.add_sized(
+                    [220.0, 0.0],
+                    egui::TextEdit::singleline(&mut self.config.token)
+                        .password(true)
+                        .id_source("config_token"),
+                );
+                if token_response.has_focus() {
+                    any_text_field_has_focus = true;
+                    ime_purpose = egui::viewport::IMEPurpose::Password;
+                }
+
                 ui.label("VLC Path");
-                ui.text_edit_singleline(&mut self.config.vlc_path);
+                let vlc_response = ui.add_sized(
+                    [280.0, 0.0],
+                    egui::TextEdit::singleline(&mut self.config.vlc_path)
+                        .id_source("config_vlc_path"),
+                );
+                any_text_field_has_focus |= vlc_response.has_focus();
 
                 if ui.button("Save Config").clicked() {
                     self.save_config();
@@ -383,8 +419,22 @@ impl eframe::App for PosterLauncherApp {
 
                 ui.separator();
                 ui.label("Search");
-                ui.text_edit_singleline(&mut self.search_text);
+                let search_response = ui.add_sized(
+                    [220.0, 0.0],
+                    egui::TextEdit::singleline(&mut self.search_text)
+                        .id_source("search_text"),
+                );
+                any_text_field_has_focus |= search_response.has_focus();
+
+                if ui.button("Close").clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             });
+
+            ctx.send_viewport_cmd(egui::ViewportCommand::IMEAllowed(
+                any_text_field_has_focus,
+            ));
+            ctx.send_viewport_cmd(egui::ViewportCommand::IMEPurpose(ime_purpose));
         });
 
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
@@ -623,6 +673,19 @@ fn continue_progress_text(item: &MediaItem) -> Option<String> {
 
     let percent = ((view_offset as f64 / duration as f64) * 100.0).round() as i32;
     Some(format!("{}%", percent.clamp(0, 100)))
+}
+
+fn format_resume_time(offset_ms: u64) -> String {
+    let total_seconds = offset_ms / 1_000;
+    let hours = total_seconds / 3_600;
+    let minutes = (total_seconds % 3_600) / 60;
+    let seconds = total_seconds % 60;
+
+    if hours > 0 {
+        format!("{hours:02}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes:02}:{seconds:02}")
+    }
 }
 
 /// 后台完成后回传主线程的事件。

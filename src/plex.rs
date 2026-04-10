@@ -80,14 +80,16 @@ impl PlexClient {
         })
     }
 
-    /// 获取增强版 Continue Watching：先拿 Plex 原生列表，再用历史记录补齐更多未看完条目。
+    /// 获取增强版 Continue Watching：先拿 Plex 原生未看完列表，再用最近播放补齐更多条目。
     pub fn fetch_continue_watching_enhanced(
         &self,
         hub_count: usize,
         history_size: usize,
     ) -> Result<MoviePage, PlexError> {
-        let mut items = self.fetch_continue_watching(hub_count)?;
-        let mut seen: HashSet<String> = items.iter().map(|item| item.rating_key.clone()).collect();
+        let mut resume_items = self.fetch_continue_watching(hub_count)?;
+        let mut seen: HashSet<String> =
+            resume_items.iter().map(|item| item.rating_key.clone()).collect();
+        let mut recent_items = Vec::new();
 
         let history = self.fetch_playback_history(history_size)?;
         let history_rating_keys = dedup_history_rating_keys(&history, &seen);
@@ -97,16 +99,25 @@ impl PlexClient {
             if let Some(viewed_at) = history_viewed_at.get(&item.rating_key) {
                 item.last_viewed_at = Some(*viewed_at);
             }
-            if is_continue_candidate(&item) && seen.insert(item.rating_key.clone()) {
-                items.push(item);
+            if !seen.insert(item.rating_key.clone()) {
+                continue;
+            }
+
+            if is_continue_candidate(&item) {
+                resume_items.push(item);
+            } else {
+                recent_items.push(item);
             }
         }
 
-        items.sort_by(|left, right| right.last_viewed_at.cmp(&left.last_viewed_at));
+        resume_items.sort_by(|left, right| right.last_viewed_at.cmp(&left.last_viewed_at));
+        recent_items.sort_by(|left, right| right.last_viewed_at.cmp(&left.last_viewed_at));
+        resume_items.extend(recent_items);
+        resume_items.truncate(hub_count);
 
         Ok(MoviePage {
-            total_size: items.len(),
-            items,
+            total_size: resume_items.len(),
+            items: resume_items,
             start: 0,
         })
     }

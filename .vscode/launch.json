@@ -2,7 +2,14 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Debug Plex Poster Launcher",
+      "name": "Run Plex Poster Launcher",
+      "type": "node-terminal",
+      "request": "launch",
+      "preLaunchTask": "cargo build (debug)",
+      "command": "bash -lc 'cd \"${workspaceFolder}\" && export XDG_CONFIG_HOME=\"$PWD/.local/config\" XDG_CACHE_HOME=\"$PWD/.local/cache\"; exec ./target/debug/plex-poster-launcher'"
+    },
+    {
+      "name": "Debug Plex Poster Launcher (LLDB Optional)",
       "type": "lldb",
       "request": "launch",
       "program": "${workspaceFolder}/target/debug/plex-poster-launcher",

@@ -86,8 +86,9 @@ cargo run --release
 如果你使用 VS Code / Cursor 一类 IDE，也可以直接点调试按钮。
 
 - 已提供本地调试配置：`.vscode/launch.json`
-- 需要安装 `CodeLLDB` 扩展
-- 选择 `Debug Plex Poster Launcher` 后即可直接启动
+- 默认使用 `Run Plex Poster Launcher`，不依赖 `CodeLLDB`
+- 这个默认运行配置会直接启动已构建的二进制，IDE 里的停止按钮也能正常关闭程序
+- 如果你装了 `CodeLLDB`，也可以使用 `Debug Plex Poster Launcher (LLDB Optional)`
 - 调试时会自动使用和 `start.sh` 一致的 `XDG_CONFIG_HOME` / `XDG_CACHE_HOME`
 
 这个脚本会做两件事：
