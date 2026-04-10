@@ -137,9 +137,6 @@ cargo build --release
 - 仅在最新提交信息以 `[deploy]` 开头时在 push 时自动运行  
 - 仍可通过 `workflow_dispatch` 手动触发  
 
-若在 Ubuntu 上开发但需要 Win32 发布产物，推荐使用此流程。  
-如果你之前下载过旧版 zip，仍然可能会遇到 `vcruntime140.dll` 缺失；需要等新的 GitHub Actions 构建完成后，重新下载新的压缩包。
-
 **English**  
 The repo includes `.github/workflows/windows-win32.yml`.
 
@@ -150,8 +147,6 @@ The repo includes `.github/workflows/windows-win32.yml`.
 - The zip contains the `.exe`, `config.toml`, fonts, and `README.md`  
 - Auto-runs on push only when the latest commit message starts with `[deploy]`  
 - Can still be triggered manually via `workflow_dispatch`  
-
-If you develop on Ubuntu but need Win32 binaries, use this workflow. Older zip downloads may still lack `vcruntime140.dll`; download a fresh artifact from a newer Actions run.
 
 ---
 
