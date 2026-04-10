@@ -1,0 +1,8 @@
+# Plex 服务器地址（示例为局域网）
+server_url = "http://192.168.1.100:32400"
+# 账户设置中生成的 Plex Token
+token = "replace-with-your-plex-token"
+# Windows 下 VLC 默认安装路径示例
+vlc_path = "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe"
+# 首次可留空，应用载入电影库后会自动写入
+selected_library_id = ""

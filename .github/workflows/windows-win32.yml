@@ -11,6 +11,7 @@ env:
   CARGO_TERM_COLOR: always
   BIN_NAME: plex-poster-launcher
   TARGET: i686-pc-windows-msvc
+  PACKAGE_NAME: plex-poster-launcher-win32
 
 jobs:
   build:
@@ -34,8 +35,19 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target $env:TARGET
 
-      - name: Upload Win32 artifact
+      - name: Prepare zip package
+        shell: pwsh
+        run: |
+          $packageRoot = "dist/${env:PACKAGE_NAME}"
+          New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
+          Copy-Item "target/${env:TARGET}/release/${env:BIN_NAME}.exe" "$packageRoot/${env:BIN_NAME}.exe"
+          Copy-Item "DroidSansFallbackFull.ttf" "$packageRoot/DroidSansFallbackFull.ttf"
+          Copy-Item "packaging/windows/config.toml" "$packageRoot/config.toml"
+          Copy-Item "README.md" "$packageRoot/README.md"
+          Compress-Archive -Path $packageRoot -DestinationPath "dist/${env:PACKAGE_NAME}.zip" -Force
+
+      - name: Upload Win32 zip artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.BIN_NAME }}-${{ env.TARGET }}
-          path: target/${{ env.TARGET }}/release/${{ env.BIN_NAME }}.exe
+          name: ${{ env.PACKAGE_NAME }}
+          path: dist/${{ env.PACKAGE_NAME }}.zip
