@@ -6,6 +6,14 @@
 **English**  
 A lightweight desktop launcher: browse your Plex movie libraries as a poster wall and open titles in an external VLC player.
 
+**中文**  
+以下为程序**启动后的界面效果**示意（具体以本机为准）。
+
+**English**  
+**Screenshot of the UI** after launching the app (your layout may differ).
+
+![程序启动后的界面效果 / App UI after launch](snap.jpg)
+
 ---
 
 ## 背景与动机 / Background
