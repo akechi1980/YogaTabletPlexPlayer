@@ -56,12 +56,15 @@ cargo build --release
 
 - 在 `windows-latest` 上构建
 - 目标为 `i686-pc-windows-msvc`（32 位 Windows 可执行文件）
+- 通过静态链接 MSVC C 运行库，尽量避免目标机器额外缺少 `vcruntime140.dll`
 - 将可直接分发的 `.zip` 作为工作流构件上传
 - 压缩包内包含 `.exe`、`config.toml`、字体文件和 `README.md`
 - 仅在最新提交信息以 `[deploy]` 开头时在 push 时自动运行
 - 仍可通过 `workflow_dispatch` 手动触发
 
 若在 Ubuntu 上开发但需要 Win32 发布产物，推荐使用此流程。
+
+如果你之前下载过旧版 zip，仍然可能会遇到 `vcruntime140.dll` 缺失；需要等新的 GitHub Actions 构建完成后，重新下载新的压缩包。
 
 ## 运行
 
