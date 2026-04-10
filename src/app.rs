@@ -160,7 +160,7 @@ impl PosterLauncherApp {
         self.next_start = 0;
         self.total_size = 0;
         self.is_loading_movies = true;
-        self.status_text = "Loading Continue Watching...".to_owned();
+        self.status_text = "Loading recent and continue-watching items...".to_owned();
         let _ = self
             .worker_tx
             .send(WorkerCommand::LoadContinueWatching(self.config.clone()));
@@ -236,7 +236,7 @@ impl PosterLauncherApp {
                 self.total_size.max(self.items.len())
             ),
             BrowseMode::ContinueWatching => {
-                format!("Loaded {} Continue Watching items.", self.items.len())
+                format!("Loaded {} recent / continue items.", self.items.len())
             }
         };
     }
@@ -244,7 +244,7 @@ impl PosterLauncherApp {
     fn browse_mode_title(&self) -> &'static str {
         match self.browse_mode {
             BrowseMode::Library => "Library",
-            BrowseMode::ContinueWatching => "Continue Watching",
+            BrowseMode::ContinueWatching => "Recent & Continue Watching",
         }
     }
 
@@ -400,7 +400,7 @@ impl eframe::App for PosterLauncherApp {
                     self.reload_movies();
                 }
 
-                if ui.button("Continue Watching").clicked() {
+                if ui.button("Recent / Continue").clicked() {
                     self.load_continue_watching();
                 }
 
