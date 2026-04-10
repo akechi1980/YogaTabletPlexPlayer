@@ -1,0 +1,41 @@
+name: Windows Win32 Build
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN_NAME: plex-poster-launcher
+  TARGET: i686-pc-windows-msvc
+
+jobs:
+  build:
+    runs-on: windows-latest
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, '[deploy]')
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.TARGET }}
+
+      - name: Build release binary
+        run: cargo build --release --target $env:TARGET
+
+      - name: Upload Win32 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BIN_NAME }}-${{ env.TARGET }}
+          path: target/${{ env.TARGET }}/release/${{ env.BIN_NAME }}.exe

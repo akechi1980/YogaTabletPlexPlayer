@@ -1,0 +1,22 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Plex Poster Launcher",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/plex-poster-launcher",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "cargo build (debug)",
+      "terminal": "integrated",
+      "args": [],
+      "env": {
+        "XDG_CONFIG_HOME": "${workspaceFolder}/.local/config",
+        "XDG_CACHE_HOME": "${workspaceFolder}/.local/cache",
+        "DISPLAY": "${env:DISPLAY}",
+        "WAYLAND_DISPLAY": "${env:WAYLAND_DISPLAY}",
+        "XDG_RUNTIME_DIR": "${env:XDG_RUNTIME_DIR}"
+      }
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+[package]
+name = "plex-poster-launcher"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+directories = "5.0"
+eframe = { version = "0.27", default-features = false, features = ["default_fonts", "glow"] }
+egui = "0.27"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+quick-xml = { version = "0.36", features = ["serialize"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "gzip", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "1.0"
+toml = "0.8"
+url = "2.5"
