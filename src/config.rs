@@ -11,6 +11,8 @@ pub struct AppConfig {
     pub token: String,
     pub vlc_path: String,
     pub selected_library_id: String,
+    #[serde(default)]
+    pub search_history: Vec<String>,
 }
 
 impl AppConfig {

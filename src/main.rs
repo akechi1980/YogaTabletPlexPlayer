@@ -7,6 +7,7 @@ mod config;
 mod models;
 mod player;
 mod plex;
+mod touch_keyboard;
 mod ui;
 
 use std::fs;

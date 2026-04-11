@@ -80,6 +80,42 @@ impl PlexClient {
         })
     }
 
+    /// 对整个电影库做服务端搜索，并支持分页。
+    pub fn search_movies_page(
+        &self,
+        section_id: &str,
+        query: &str,
+        start: usize,
+        size: usize,
+    ) -> Result<MoviePage, PlexError> {
+        let path = format!("/library/sections/{section_id}/search");
+        let start_value = start.to_string();
+        let size_value = size.to_string();
+        let xml = self.get_xml(
+            &path,
+            &[
+                ("type", "1"),
+                ("query", query.trim()),
+                ("X-Plex-Container-Start", &start_value),
+                ("X-Plex-Container-Size", &size_value),
+            ],
+        )?;
+
+        let container: MediaContainer = from_str(&xml)?;
+        let total_size = container.total_size.unwrap_or(container.size.unwrap_or_default());
+        let items = container
+            .videos
+            .into_iter()
+            .map(media_item_from_video)
+            .collect();
+
+        Ok(MoviePage {
+            items,
+            start,
+            total_size,
+        })
+    }
+
     /// 获取增强版 Continue Watching：先拿 Plex 原生未看完列表，再用最近播放补齐更多条目。
     pub fn fetch_continue_watching_enhanced(
         &self,

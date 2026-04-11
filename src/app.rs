@@ -10,6 +10,7 @@ use crate::config::AppConfig;
 use crate::models::{LibrarySection, MediaItem, MoviePage};
 use crate::player;
 use crate::plex::PlexClient;
+use crate::touch_keyboard;
 use crate::ui::poster_grid;
 use crate::AppPaths;
 
@@ -34,6 +35,7 @@ pub struct PosterLauncherApp {
     textures: HashMap<String, TextureHandle>,
     poster_jobs: HashSet<String>,
     search_text: String,
+    active_search_query: Option<String>,
     selected_item_key: Option<String>,
     status_text: String,
     error_text: Option<String>,
@@ -66,6 +68,7 @@ impl PosterLauncherApp {
             textures: HashMap::new(),
             poster_jobs: HashSet::new(),
             search_text: String::new(),
+            active_search_query: None,
             selected_item_key: None,
             status_text: "Fill in Plex URL, token, and VLC path first.".to_owned(),
             error_text: None,
@@ -86,14 +89,45 @@ impl PosterLauncherApp {
     }
 
     fn save_config(&mut self) {
+        self.save_config_internal(true);
+    }
+
+    fn save_config_silently(&mut self) {
+        self.save_config_internal(false);
+    }
+
+    fn save_config_internal(&mut self, show_success_message: bool) {
         match self.config.save(&self.config_path) {
             Ok(()) => {
                 self.error_text = None;
-                self.status_text =
-                    format!("Configuration saved to {}", self.config_path.display());
+                if show_success_message {
+                    self.status_text =
+                        format!("Configuration saved to {}", self.config_path.display());
+                }
             }
             Err(error) => self.error_text = Some(error.to_string()),
         }
+    }
+
+    fn remember_current_search(&mut self) {
+        let query = self.search_text.trim();
+        if query.is_empty() {
+            return;
+        }
+
+        self.config.search_history.retain(|item| item.trim() != query);
+        self.config.search_history.insert(0, query.to_owned());
+        self.config.search_history.truncate(20);
+        self.save_config_silently();
+    }
+
+    fn delete_search_history_at(&mut self, index: usize) {
+        if index >= self.config.search_history.len() {
+            return;
+        }
+
+        self.config.search_history.remove(index);
+        self.save_config_silently();
     }
 
     fn load_sections(&mut self) {
@@ -117,6 +151,7 @@ impl PosterLauncherApp {
         }
 
         self.browse_mode = BrowseMode::Library;
+        self.active_search_query = None;
         self.error_text = None;
         self.items.clear();
         self.textures.clear();
@@ -137,13 +172,46 @@ impl PosterLauncherApp {
 
         self.error_text = None;
         self.is_loading_movies = true;
-        self.status_text = format!("Loading page {}...", self.next_start / PAGE_SIZE + 1);
+        self.status_text = match self.active_search_query.as_deref() {
+            Some(query) => format!(
+                "Searching \"{}\" page {}...",
+                query,
+                self.next_start / PAGE_SIZE + 1
+            ),
+            None => format!("Loading page {}...", self.next_start / PAGE_SIZE + 1),
+        };
         let _ = self.worker_tx.send(WorkerCommand::LoadMovies {
             config: self.config.clone(),
             section_id: self.config.selected_library_id.clone(),
+            search_query: self.active_search_query.clone(),
             start: self.next_start,
             size: PAGE_SIZE,
         });
+    }
+
+    fn apply_search(&mut self) {
+        if self.config.selected_library_id.trim().is_empty() {
+            self.error_text = Some("Choose a movie library first.".to_owned());
+            return;
+        }
+
+        let query = self.search_text.trim().to_owned();
+        if query.is_empty() {
+            self.reload_movies();
+            return;
+        }
+
+        self.remember_current_search();
+        self.browse_mode = BrowseMode::Library;
+        self.active_search_query = Some(query);
+        self.error_text = None;
+        self.items.clear();
+        self.textures.clear();
+        self.poster_jobs.clear();
+        self.selected_item_key = None;
+        self.next_start = 0;
+        self.total_size = 0;
+        self.load_more_movies();
     }
 
     fn load_continue_watching(&mut self) {
@@ -152,6 +220,7 @@ impl PosterLauncherApp {
         }
 
         self.browse_mode = BrowseMode::ContinueWatching;
+        self.active_search_query = None;
         self.error_text = None;
         self.items.clear();
         self.textures.clear();
@@ -230,11 +299,19 @@ impl PosterLauncherApp {
         self.total_size = page.total_size;
         self.items.extend(page.items);
         self.status_text = match self.browse_mode {
-            BrowseMode::Library => format!(
-                "Loaded {}/{} movies.",
-                self.items.len(),
-                self.total_size.max(self.items.len())
-            ),
+            BrowseMode::Library => match self.active_search_query.as_deref() {
+                Some(query) => format!(
+                    "Loaded {}/{} search results for \"{}\".",
+                    self.items.len(),
+                    self.total_size.max(self.items.len()),
+                    query
+                ),
+                None => format!(
+                    "Loaded {}/{} movies.",
+                    self.items.len(),
+                    self.total_size.max(self.items.len())
+                ),
+            },
             BrowseMode::ContinueWatching => {
                 format!("Loaded {} recent / continue items.", self.items.len())
             }
@@ -243,7 +320,13 @@ impl PosterLauncherApp {
 
     fn browse_mode_title(&self) -> &'static str {
         match self.browse_mode {
-            BrowseMode::Library => "Library",
+            BrowseMode::Library => {
+                if self.active_search_query.is_some() {
+                    "Search Results"
+                } else {
+                    "Library"
+                }
+            }
             BrowseMode::ContinueWatching => "Recent & Continue Watching",
         }
     }
@@ -344,11 +427,12 @@ impl eframe::App for PosterLauncherApp {
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
             let mut any_text_field_has_focus = false;
             let mut ime_purpose = egui::viewport::IMEPurpose::Normal;
+            let control_height = ui.spacing().interact_size.y;
 
             ui.horizontal_wrapped(|ui| {
                 ui.label("Plex URL");
                 let server_response = ui.add_sized(
-                    [300.0, 0.0],
+                    [300.0, control_height],
                     egui::TextEdit::singleline(&mut self.config.server_url)
                         .id_source("config_server_url"),
                 );
@@ -356,7 +440,7 @@ impl eframe::App for PosterLauncherApp {
 
                 ui.label("Token");
                 let token_response = ui.add_sized(
-                    [220.0, 0.0],
+                    [220.0, control_height],
                     egui::TextEdit::singleline(&mut self.config.token)
                         .password(true)
                         .id_source("config_token"),
@@ -368,11 +452,18 @@ impl eframe::App for PosterLauncherApp {
 
                 ui.label("VLC Path");
                 let vlc_response = ui.add_sized(
-                    [280.0, 0.0],
+                    [280.0, control_height],
                     egui::TextEdit::singleline(&mut self.config.vlc_path)
                         .id_source("config_vlc_path"),
                 );
                 any_text_field_has_focus |= vlc_response.has_focus();
+
+                if server_response.gained_focus()
+                    || token_response.gained_focus()
+                    || vlc_response.gained_focus()
+                {
+                    touch_keyboard::show_touch_keyboard();
+                }
 
                 if ui.button("Save Config").clicked() {
                     self.save_config();
@@ -382,7 +473,7 @@ impl eframe::App for PosterLauncherApp {
                 }
             });
 
-            ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.label("Movie Library");
                 egui::ComboBox::from_id_source("library_selector")
                     .selected_text(self.selected_library_title())
@@ -418,13 +509,69 @@ impl eframe::App for PosterLauncherApp {
                 }
 
                 ui.separator();
-                ui.label("Search");
-                let search_response = ui.add_sized(
-                    [220.0, 0.0],
-                    egui::TextEdit::singleline(&mut self.search_text)
-                        .id_source("search_text"),
-                );
-                any_text_field_has_focus |= search_response.has_focus();
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.label("Search");
+                    let search_response = ui.add_sized(
+                        [220.0, control_height],
+                        egui::TextEdit::singleline(&mut self.search_text)
+                            .hint_text("Search whole library")
+                            .id_source("search_text"),
+                    );
+                    any_text_field_has_focus |= search_response.has_focus();
+
+                    if search_response.gained_focus() {
+                        touch_keyboard::show_touch_keyboard();
+                    }
+
+                    let submitted_with_enter = search_response.lost_focus()
+                        && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                    if submitted_with_enter {
+                        self.apply_search();
+                    }
+
+                    if ui.button("Search").clicked() {
+                        self.apply_search();
+                    }
+
+                    if ui.button("Clear").clicked() {
+                        self.search_text.clear();
+                        self.reload_movies();
+                    }
+
+                    ui.menu_button("History", |ui| {
+                        if self.search_text.trim().is_empty() {
+                            ui.add_enabled(false, egui::Button::new("Save current search"));
+                        } else if ui.button("Save current search").clicked() {
+                            self.remember_current_search();
+                            ui.close_menu();
+                        }
+
+                        ui.separator();
+
+                        if self.config.search_history.is_empty() {
+                            ui.label("No saved search history.");
+                        } else {
+                            let mut remove_index = None;
+                            let history_items = self.config.search_history.clone();
+                            for (index, entry) in history_items.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    if ui.selectable_label(false, entry).clicked() {
+                                        self.search_text = entry.clone();
+                                        self.apply_search();
+                                        ui.close_menu();
+                                    }
+                                    if ui.small_button("Delete").clicked() {
+                                        remove_index = Some(index);
+                                    }
+                                });
+                            }
+
+                            if let Some(index) = remove_index {
+                                self.delete_search_history_at(index);
+                            }
+                        }
+                    });
+                });
 
                 if ui.button("Close").clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -453,7 +600,14 @@ impl eframe::App for PosterLauncherApp {
                 ui.separator();
 
                 if let Some(item) = self.selected_item().cloned() {
-                    ui.label(RichText::new(&item.title).strong().size(18.0));
+                    let mut title_text = item.title.clone();
+                    ui.add(
+                        egui::TextEdit::multiline(&mut title_text)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(2)
+                            .font(egui::TextStyle::Heading)
+                            .frame(false),
+                    );
                     ui.label(format!(
                         "Year: {}",
                         item.year
@@ -483,7 +637,11 @@ impl eframe::App for PosterLauncherApp {
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            let filtered = poster_grid::filtered_items(&self.items, &self.search_text);
+            let filtered = if self.active_search_query.is_some() {
+                (0..self.items.len()).collect()
+            } else {
+                poster_grid::filtered_items(&self.items, "")
+            };
             let columns = poster_grid::poster_columns(ui.available_width());
             let can_load_more = self.browse_mode == BrowseMode::Library
                 && !self.is_loading_movies
@@ -493,7 +651,10 @@ impl eframe::App for PosterLauncherApp {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(self.browse_mode_title()).strong());
                 ui.label(RichText::new(format!("Loaded {}", self.items.len())).strong());
-                ui.label(format!("Filtered {}", filtered.len()));
+                ui.label(format!("Showing {}", filtered.len()));
+                if let Some(query) = self.active_search_query.as_deref() {
+                    ui.label(format!("Query: {}", query));
+                }
                 if self.is_loading_sections || self.is_loading_movies {
                     ui.spinner();
                 }
@@ -575,11 +736,18 @@ fn spawn_worker(cache: ThumbnailCache) -> (Sender<WorkerCommand>, Receiver<Worke
                 WorkerCommand::LoadMovies {
                     config,
                     section_id,
+                    search_query,
                     start,
                     size,
                 } => {
                     let result = PlexClient::new(config.server_url_trimmed(), config.token)
-                        .and_then(|client| client.fetch_movies_page(&section_id, start, size))
+                        .and_then(|client| {
+                            if let Some(query) = search_query.as_deref() {
+                                client.search_movies_page(&section_id, query, start, size)
+                            } else {
+                                client.fetch_movies_page(&section_id, start, size)
+                            }
+                        })
                         .map_err(|error| error.to_string());
                     let _ = event_tx.send(WorkerEvent::MoviesLoaded(result));
                 }
@@ -654,6 +822,7 @@ enum WorkerCommand {
     LoadMovies {
         config: AppConfig,
         section_id: String,
+        search_query: Option<String>,
         start: usize,
         size: usize,
     },
