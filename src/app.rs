@@ -36,6 +36,7 @@ pub struct PosterLauncherApp {
     poster_jobs: HashSet<String>,
     search_text: String,
     active_search_query: Option<String>,
+    sort_by_newest: bool,
     selected_item_key: Option<String>,
     status_text: String,
     error_text: Option<String>,
@@ -69,6 +70,7 @@ impl PosterLauncherApp {
             poster_jobs: HashSet::new(),
             search_text: String::new(),
             active_search_query: None,
+            sort_by_newest: false,
             selected_item_key: None,
             status_text: "Fill in Plex URL, token, and VLC path first.".to_owned(),
             error_text: None,
@@ -184,6 +186,7 @@ impl PosterLauncherApp {
             config: self.config.clone(),
             section_id: self.config.selected_library_id.clone(),
             search_query: self.active_search_query.clone(),
+            newest_first: self.sort_by_newest,
             start: self.next_start,
             size: PAGE_SIZE,
         });
@@ -637,6 +640,34 @@ impl eframe::App for PosterLauncherApp {
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(self.browse_mode_title()).strong());
+                ui.label(RichText::new(format!("Loaded {}", self.items.len())).strong());
+                ui.label(format!("Showing {}", self.items.len()));
+                if let Some(query) = self.active_search_query.as_deref() {
+                    ui.label(format!("Query: {}", query));
+                }
+                if self.is_loading_sections || self.is_loading_movies {
+                    ui.spinner();
+                }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let toggle = ui.add_enabled(
+                        self.browse_mode == BrowseMode::Library,
+                        egui::widgets::Checkbox::new(&mut self.sort_by_newest, "最新优先"),
+                    );
+                    if toggle.changed() && self.browse_mode == BrowseMode::Library {
+                        if self.active_search_query.is_some() {
+                            self.apply_search();
+                        } else {
+                            self.reload_movies();
+                        }
+                    }
+                });
+            });
+
+            ui.separator();
+
             let filtered = if self.active_search_query.is_some() {
                 (0..self.items.len()).collect()
             } else {
@@ -647,20 +678,6 @@ impl eframe::App for PosterLauncherApp {
                 && !self.is_loading_movies
                 && self.total_size > 0
                 && self.items.len() < self.total_size;
-
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(self.browse_mode_title()).strong());
-                ui.label(RichText::new(format!("Loaded {}", self.items.len())).strong());
-                ui.label(format!("Showing {}", filtered.len()));
-                if let Some(query) = self.active_search_query.as_deref() {
-                    ui.label(format!("Query: {}", query));
-                }
-                if self.is_loading_sections || self.is_loading_movies {
-                    ui.spinner();
-                }
-            });
-
-            ui.separator();
 
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for row in filtered.chunks(columns) {
@@ -737,15 +754,22 @@ fn spawn_worker(cache: ThumbnailCache) -> (Sender<WorkerCommand>, Receiver<Worke
                     config,
                     section_id,
                     search_query,
+                    newest_first,
                     start,
                     size,
                 } => {
                     let result = PlexClient::new(config.server_url_trimmed(), config.token)
                         .and_then(|client| {
                             if let Some(query) = search_query.as_deref() {
-                                client.search_movies_page(&section_id, query, start, size)
+                                client.search_movies_page(
+                                    &section_id,
+                                    query,
+                                    newest_first,
+                                    start,
+                                    size,
+                                )
                             } else {
-                                client.fetch_movies_page(&section_id, start, size)
+                                client.fetch_movies_page(&section_id, newest_first, start, size)
                             }
                         })
                         .map_err(|error| error.to_string());
@@ -823,6 +847,7 @@ enum WorkerCommand {
         config: AppConfig,
         section_id: String,
         search_query: Option<String>,
+        newest_first: bool,
         start: usize,
         size: usize,
     },

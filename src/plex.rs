@@ -50,19 +50,29 @@ impl PlexClient {
     pub fn fetch_movies_page(
         &self,
         section_id: &str,
+        newest_first: bool,
         start: usize,
         size: usize,
     ) -> Result<MoviePage, PlexError> {
         let path = format!("/library/sections/{section_id}/all");
         let start_value = start.to_string();
         let size_value = size.to_string();
+        let sort_value = if newest_first {
+            Some("updatedAt:desc")
+        } else {
+            None
+        };
+        let mut params = vec![
+            ("type", "1"),
+            ("X-Plex-Container-Start", start_value.as_str()),
+            ("X-Plex-Container-Size", size_value.as_str()),
+        ];
+        if let Some(sort_value) = sort_value {
+            params.push(("sort", sort_value));
+        }
         let xml = self.get_xml(
             &path,
-            &[
-                ("type", "1"),
-                ("X-Plex-Container-Start", &start_value),
-                ("X-Plex-Container-Size", &size_value),
-            ],
+            &params,
         )?;
 
         let container: MediaContainer = from_str(&xml)?;
@@ -85,20 +95,30 @@ impl PlexClient {
         &self,
         section_id: &str,
         query: &str,
+        newest_first: bool,
         start: usize,
         size: usize,
     ) -> Result<MoviePage, PlexError> {
         let path = format!("/library/sections/{section_id}/search");
         let start_value = start.to_string();
         let size_value = size.to_string();
+        let sort_value = if newest_first {
+            Some("updatedAt:desc")
+        } else {
+            None
+        };
+        let mut params = vec![
+            ("type", "1"),
+            ("query", query.trim()),
+            ("X-Plex-Container-Start", start_value.as_str()),
+            ("X-Plex-Container-Size", size_value.as_str()),
+        ];
+        if let Some(sort_value) = sort_value {
+            params.push(("sort", sort_value));
+        }
         let xml = self.get_xml(
             &path,
-            &[
-                ("type", "1"),
-                ("query", query.trim()),
-                ("X-Plex-Container-Start", &start_value),
-                ("X-Plex-Container-Size", &size_value),
-            ],
+            &params,
         )?;
 
         let container: MediaContainer = from_str(&xml)?;
