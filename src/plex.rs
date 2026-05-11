@@ -21,9 +21,7 @@ impl PlexClient {
     pub fn new(server_url: impl Into<String>, token: impl Into<String>) -> Result<Self, PlexError> {
         let server_url = server_url.into().trim().trim_end_matches('/').to_owned();
         let token = token.into().trim().to_owned();
-        let http = Client::builder()
-            .timeout(Duration::from_secs(20))
-            .build()?;
+        let http = Client::builder().timeout(Duration::from_secs(20)).build()?;
         Ok(Self {
             server_url,
             token,
@@ -70,13 +68,12 @@ impl PlexClient {
         if let Some(sort_value) = sort_value {
             params.push(("sort", sort_value));
         }
-        let xml = self.get_xml(
-            &path,
-            &params,
-        )?;
+        let xml = self.get_xml(&path, &params)?;
 
         let container: MediaContainer = from_str(&xml)?;
-        let total_size = container.total_size.unwrap_or(container.size.unwrap_or_default());
+        let total_size = container
+            .total_size
+            .unwrap_or(container.size.unwrap_or_default());
         let items = container
             .videos
             .into_iter()
@@ -116,13 +113,12 @@ impl PlexClient {
         if let Some(sort_value) = sort_value {
             params.push(("sort", sort_value));
         }
-        let xml = self.get_xml(
-            &path,
-            &params,
-        )?;
+        let xml = self.get_xml(&path, &params)?;
 
         let container: MediaContainer = from_str(&xml)?;
-        let total_size = container.total_size.unwrap_or(container.size.unwrap_or_default());
+        let total_size = container
+            .total_size
+            .unwrap_or(container.size.unwrap_or_default());
         let items = container
             .videos
             .into_iter()
@@ -143,8 +139,10 @@ impl PlexClient {
         history_size: usize,
     ) -> Result<MoviePage, PlexError> {
         let mut resume_items = self.fetch_continue_watching(hub_count)?;
-        let mut seen: HashSet<String> =
-            resume_items.iter().map(|item| item.rating_key.clone()).collect();
+        let mut seen: HashSet<String> = resume_items
+            .iter()
+            .map(|item| item.rating_key.clone())
+            .collect();
         let mut recent_items = Vec::new();
 
         let history = self.fetch_playback_history(history_size)?;
@@ -238,7 +236,12 @@ impl PlexClient {
     }
 
     /// 使用 Plex 图片转码接口生成固定尺寸的缩略图 URL。
-    pub fn build_thumbnail_url(&self, thumb_path: &str, width: u32, height: u32) -> Result<String, PlexError> {
+    pub fn build_thumbnail_url(
+        &self,
+        thumb_path: &str,
+        width: u32,
+        height: u32,
+    ) -> Result<String, PlexError> {
         let absolute_thumb = self.absolute_url(thumb_path, &[])?;
         let url = self.absolute_url(
             "/photo/:/transcode",
@@ -257,6 +260,14 @@ impl PlexClient {
     pub fn build_stream_url(&self, part_key: &str) -> Result<String, PlexError> {
         let url = self.absolute_url(part_key, &[("download", "1")])?;
         Ok(url.to_string())
+    }
+
+    /// 删除 Plex 媒体库中的影片条目，并由 Plex 服务端删除对应媒体文件。
+    pub fn delete_movie(&self, rating_key: &str) -> Result<(), PlexError> {
+        let path = format!("/library/metadata/{rating_key}");
+        let url = self.absolute_url(&path, &[])?;
+        self.http.delete(url).send()?.error_for_status()?;
+        Ok(())
     }
 
     pub fn download_thumbnail(&self, thumb_path: &str) -> Result<Vec<u8>, PlexError> {
@@ -416,10 +427,7 @@ fn media_item_from_video(video: VideoNode) -> MediaItem {
     }
 }
 
-fn dedup_history_rating_keys(
-    history: &[HistoryVideoNode],
-    seen: &HashSet<String>,
-) -> Vec<String> {
+fn dedup_history_rating_keys(history: &[HistoryVideoNode], seen: &HashSet<String>) -> Vec<String> {
     let mut unique = HashSet::new();
     let mut keys = Vec::new();
 
@@ -456,7 +464,5 @@ fn is_continue_candidate(item: &MediaItem) -> bool {
         return false;
     };
 
-    duration > 0
-        && view_offset >= 60_000
-        && view_offset < duration.saturating_mul(95) / 100
+    duration > 0 && view_offset >= 60_000 && view_offset < duration.saturating_mul(95) / 100
 }

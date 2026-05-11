@@ -18,6 +18,7 @@ use crate::AppPaths;
 const PAGE_SIZE: usize = 60;
 const CONTINUE_WATCHING_COUNT: usize = 200;
 const CONTINUE_WATCHING_HISTORY_SIZE: usize = 400;
+const SEARCH_HISTORY_LIMIT: usize = 50;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BrowseMode {
@@ -38,6 +39,8 @@ pub struct PosterLauncherApp {
     active_search_query: Option<String>,
     sort_by_newest: bool,
     selected_item_key: Option<String>,
+    pending_delete_item: Option<MediaItem>,
+    deleting_item_key: Option<String>,
     status_text: String,
     error_text: Option<String>,
     is_loading_sections: bool,
@@ -72,6 +75,8 @@ impl PosterLauncherApp {
             active_search_query: None,
             sort_by_newest: false,
             selected_item_key: None,
+            pending_delete_item: None,
+            deleting_item_key: None,
             status_text: "Fill in Plex URL, token, and VLC path first.".to_owned(),
             error_text: None,
             is_loading_sections: false,
@@ -117,9 +122,11 @@ impl PosterLauncherApp {
             return;
         }
 
-        self.config.search_history.retain(|item| item.trim() != query);
+        self.config
+            .search_history
+            .retain(|item| item.trim() != query);
         self.config.search_history.insert(0, query.to_owned());
-        self.config.search_history.truncate(20);
+        self.config.search_history.truncate(SEARCH_HISTORY_LIMIT);
         self.save_config_silently();
     }
 
@@ -286,14 +293,68 @@ impl PosterLauncherApp {
                 WorkerEvent::PosterReady { rating_key, path } => {
                     self.poster_jobs.remove(&rating_key);
                     if let Some(texture) = load_texture_from_path(ctx, &path, &rating_key) {
-                        self.textures.insert(rating_key, texture);
+                        self.textures.insert(rating_key.clone(), texture);
+                    }
+                    if let Some(item) = self.items.iter().find(|item| item.rating_key == rating_key)
+                    {
+                        self.status_text = format!("Updated poster for {}.", item.title);
                     }
                 }
                 WorkerEvent::PosterFailed { rating_key } => {
                     self.poster_jobs.remove(&rating_key);
+                    if let Some(item) = self.items.iter().find(|item| item.rating_key == rating_key)
+                    {
+                        self.error_text =
+                            Some(format!("Failed to update poster for {}.", item.title));
+                    }
+                }
+                WorkerEvent::MovieDeleted {
+                    rating_key,
+                    title,
+                    result,
+                } => {
+                    if self.deleting_item_key.as_deref() == Some(rating_key.as_str()) {
+                        self.deleting_item_key = None;
+                    }
+
+                    match result {
+                        Ok(()) => {
+                            self.error_text = None;
+                            self.remove_deleted_item(&rating_key);
+                            self.status_text = format!("Deleted {} from Plex.", title);
+                        }
+                        Err(error) => {
+                            self.error_text =
+                                Some(format!("Failed to delete {}: {}", title, error));
+                        }
+                    }
                 }
             }
             ctx.request_repaint();
+        }
+    }
+
+    fn remove_deleted_item(&mut self, rating_key: &str) {
+        self.items.retain(|item| item.rating_key != rating_key);
+        self.textures.remove(rating_key);
+        self.poster_jobs.remove(rating_key);
+        if self.selected_item_key.as_deref() == Some(rating_key) {
+            self.selected_item_key = None;
+        }
+        if self
+            .pending_delete_item
+            .as_ref()
+            .is_some_and(|item| item.rating_key == rating_key)
+        {
+            self.pending_delete_item = None;
+        }
+        if self.total_size > self.items.len() {
+            self.total_size = self.total_size.saturating_sub(1);
+        }
+
+        let poster_path = self.cache.poster_path(rating_key);
+        if poster_path.exists() {
+            let _ = std::fs::remove_file(poster_path);
         }
     }
 
@@ -347,6 +408,52 @@ impl PosterLauncherApp {
         self.items.iter().find(|item| item.rating_key == selected)
     }
 
+    fn request_delete_item(&mut self, item: MediaItem) {
+        if self.deleting_item_key.is_some() {
+            return;
+        }
+        self.pending_delete_item = Some(item);
+    }
+
+    fn confirm_delete_item(&mut self) {
+        let Some(item) = self.pending_delete_item.take() else {
+            return;
+        };
+        if self.deleting_item_key.is_some() {
+            return;
+        }
+
+        self.error_text = None;
+        self.status_text = format!("Deleting {} from Plex...", item.title);
+        self.deleting_item_key = Some(item.rating_key.clone());
+        let _ = self.worker_tx.send(WorkerCommand::DeleteMovie {
+            config: self.config.clone(),
+            rating_key: item.rating_key,
+            title: item.title,
+        });
+    }
+
+    fn refresh_poster(&mut self, item: &MediaItem) {
+        if self.poster_jobs.contains(&item.rating_key) {
+            return;
+        }
+
+        let Some(thumb) = item.thumb.clone() else {
+            self.error_text = Some(format!("{} does not expose a poster path.", item.title));
+            return;
+        };
+
+        self.error_text = None;
+        self.status_text = format!("Refreshing poster for {}...", item.title);
+        self.textures.remove(&item.rating_key);
+        self.poster_jobs.insert(item.rating_key.clone());
+        let _ = self.worker_tx.send(WorkerCommand::FetchPoster {
+            config: self.config.clone(),
+            rating_key: item.rating_key.clone(),
+            thumb_path: thumb,
+        });
+    }
+
     /// 若本地已有缓存则直接加载纹理；否则向后台发起一次海报下载任务。
     fn ensure_poster_texture(&mut self, ctx: &egui::Context, item: &MediaItem) {
         if self.textures.contains_key(&item.rating_key)
@@ -378,20 +485,21 @@ impl PosterLauncherApp {
     /// 根据媒体分片 key 构造流地址并启动 VLC。
     fn play_item(&mut self, item: &MediaItem) {
         let Some(part_key) = item.part_key.as_deref() else {
-            self.error_text = Some(format!("{} does not expose a playable media part.", item.title));
+            self.error_text = Some(format!(
+                "{} does not expose a playable media part.",
+                item.title
+            ));
             return;
         };
 
-        let client = match PlexClient::new(
-            self.config.server_url_trimmed(),
-            self.config.token.clone(),
-        ) {
-            Ok(client) => client,
-            Err(error) => {
-                self.error_text = Some(error.to_string());
-                return;
-            }
-        };
+        let client =
+            match PlexClient::new(self.config.server_url_trimmed(), self.config.token.clone()) {
+                Ok(client) => client,
+                Err(error) => {
+                    self.error_text = Some(error.to_string());
+                    return;
+                }
+            };
 
         let stream_url = match client.build_stream_url(part_key) {
             Ok(url) => url,
@@ -426,6 +534,33 @@ impl PosterLauncherApp {
 impl eframe::App for PosterLauncherApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.process_worker_events(ctx);
+
+        if let Some(item) = self.pending_delete_item.clone() {
+            egui::Window::new("Confirm Delete")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.label(format!("Delete \"{}\" from Plex?", item.title));
+                    ui.label(
+                        "This will ask the Plex server to delete the movie and its media files.",
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            self.pending_delete_item = None;
+                        }
+                        let delete_button =
+                            egui::Button::new("Delete").fill(egui::Color32::from_rgb(132, 36, 36));
+                        if ui
+                            .add_enabled(self.deleting_item_key.is_none(), delete_button)
+                            .clicked()
+                        {
+                            self.confirm_delete_item();
+                        }
+                    });
+                });
+        }
 
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
             let mut any_text_field_has_focus = false;
@@ -581,9 +716,7 @@ impl eframe::App for PosterLauncherApp {
                 }
             });
 
-            ctx.send_viewport_cmd(egui::ViewportCommand::IMEAllowed(
-                any_text_field_has_focus,
-            ));
+            ctx.send_viewport_cmd(egui::ViewportCommand::IMEAllowed(any_text_field_has_focus));
             ctx.send_viewport_cmd(egui::ViewportCommand::IMEPurpose(ime_purpose));
         });
 
@@ -625,14 +758,40 @@ impl eframe::App for PosterLauncherApp {
                         ui.label(format!("Progress: {}", progress));
                     }
                     ui.separator();
-                    ui.label(
-                        item.summary
-                            .as_deref()
-                            .unwrap_or("No summary available."),
-                    );
+                    ui.label(item.summary.as_deref().unwrap_or("No summary available."));
                     ui.add_space(12.0);
                     if ui.button("Play In VLC").clicked() {
                         self.play_item(&item);
+                    }
+                    let poster_is_loading = self.poster_jobs.contains(&item.rating_key);
+                    let poster_label = if poster_is_loading {
+                        "Updating Poster..."
+                    } else {
+                        "Update Poster"
+                    };
+                    if ui
+                        .add_enabled(!poster_is_loading, egui::Button::new(poster_label))
+                        .clicked()
+                    {
+                        self.refresh_poster(&item);
+                    }
+                    let is_deleting =
+                        self.deleting_item_key.as_deref() == Some(item.rating_key.as_str());
+                    let delete_label = if is_deleting {
+                        "Deleting..."
+                    } else {
+                        "Delete From Plex"
+                    };
+                    let delete_button =
+                        egui::Button::new(delete_label).fill(egui::Color32::from_rgb(132, 36, 36));
+                    if ui
+                        .add_enabled(
+                            !is_deleting && self.deleting_item_key.is_none(),
+                            delete_button,
+                        )
+                        .clicked()
+                    {
+                        self.request_delete_item(item);
                     }
                 } else {
                     ui.label("Select a poster to inspect and play it here.");
@@ -687,26 +846,23 @@ impl eframe::App for PosterLauncherApp {
                             self.ensure_poster_texture(ctx, &item);
 
                             ui.vertical(|ui| {
-                                let clicked = if let Some(texture) =
-                                    self.textures.get(&item.rating_key)
-                                {
-                                    ui.add(egui::ImageButton::new((
-                                        texture.id(),
-                                        egui::vec2(
-                                            poster_grid::POSTER_WIDTH,
-                                            poster_grid::POSTER_HEIGHT,
-                                        ),
-                                    )))
-                                    .clicked()
-                                } else {
-                                    poster_grid::draw_placeholder(ui, &item.title).clicked()
-                                };
+                                let clicked =
+                                    if let Some(texture) = self.textures.get(&item.rating_key) {
+                                        ui.add(egui::ImageButton::new((
+                                            texture.id(),
+                                            egui::vec2(
+                                                poster_grid::POSTER_WIDTH,
+                                                poster_grid::POSTER_HEIGHT,
+                                            ),
+                                        )))
+                                        .clicked()
+                                    } else {
+                                        poster_grid::draw_placeholder(ui, &item.title).clicked()
+                                    };
 
                                 ui.add_sized(
                                     [poster_grid::POSTER_CARD_WIDTH - 12.0, 0.0],
-                                    egui::Label::new(
-                                        egui::RichText::new(&item.title).size(14.0),
-                                    ),
+                                    egui::Label::new(egui::RichText::new(&item.title).size(14.0)),
                                 );
                                 if let Some(year) = item.year {
                                     ui.small(year.to_string());
@@ -798,6 +954,20 @@ fn spawn_worker(cache: ThumbnailCache) -> (Sender<WorkerCommand>, Receiver<Worke
                         let _ = event_tx.send(WorkerEvent::PosterFailed { rating_key });
                     }
                 },
+                WorkerCommand::DeleteMovie {
+                    config,
+                    rating_key,
+                    title,
+                } => {
+                    let result = PlexClient::new(config.server_url_trimmed(), config.token)
+                        .and_then(|client| client.delete_movie(&rating_key))
+                        .map_err(|error| error.to_string());
+                    let _ = event_tx.send(WorkerEvent::MovieDeleted {
+                        rating_key,
+                        title,
+                        result,
+                    });
+                }
             }
         }
     });
@@ -833,11 +1003,7 @@ fn load_texture_from_path(
     let size = [image.width() as usize, image.height() as usize];
     let pixels = image.into_raw();
     let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
-    Some(ctx.load_texture(
-        cache_key.to_owned(),
-        color_image,
-        TextureOptions::LINEAR,
-    ))
+    Some(ctx.load_texture(cache_key.to_owned(), color_image, TextureOptions::LINEAR))
 }
 
 /// 后台任务类型：与 UI 操作一一对应。
@@ -856,6 +1022,11 @@ enum WorkerCommand {
         config: AppConfig,
         rating_key: String,
         thumb_path: String,
+    },
+    DeleteMovie {
+        config: AppConfig,
+        rating_key: String,
+        title: String,
     },
 }
 
@@ -892,5 +1063,10 @@ enum WorkerEvent {
     },
     PosterFailed {
         rating_key: String,
+    },
+    MovieDeleted {
+        rating_key: String,
+        title: String,
+        result: Result<(), String>,
     },
 }
