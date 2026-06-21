@@ -33,6 +33,23 @@ pub fn draw_placeholder(ui: &mut egui::Ui, _title: &str) -> egui::Response {
     response
 }
 
+/// 在已看影片的海报右上角绘制醒目标志。
+pub fn draw_watched_badge(ui: &egui::Ui, poster_rect: egui::Rect) {
+    let badge_rect = egui::Rect::from_min_size(
+        poster_rect.right_top() + egui::vec2(-88.0, 8.0),
+        egui::vec2(80.0, 24.0),
+    );
+    ui.painter()
+        .rect_filled(badge_rect, 5.0, egui::Color32::from_rgb(24, 130, 72));
+    ui.painter().text(
+        badge_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "WATCHED",
+        egui::FontId::proportional(12.0),
+        egui::Color32::WHITE,
+    );
+}
+
 /// 返回标题包含搜索词（不区分大小写）的条目在 `items` 中的下标。
 pub fn filtered_items(items: &[MediaItem], needle: &str) -> Vec<usize> {
     let trimmed = needle.trim();
@@ -41,7 +58,8 @@ pub fn filtered_items(items: &[MediaItem], needle: &str) -> Vec<usize> {
     }
 
     let lowered = trimmed.to_lowercase();
-    items.iter()
+    items
+        .iter()
         .enumerate()
         .filter(|(_, item)| item.title.to_lowercase().contains(&lowered))
         .map(|(index, _)| index)

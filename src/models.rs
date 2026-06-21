@@ -16,6 +16,7 @@ pub struct MediaItem {
     pub library_section_title: Option<String>,
     pub duration: Option<u64>,
     pub view_offset: Option<u64>,
+    pub view_count: Option<u32>,
     pub last_viewed_at: Option<i64>,
     /// 第一个可播放分片的 API 路径，用于构造流 URL。
     pub part_key: Option<String>,

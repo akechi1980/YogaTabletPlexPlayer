@@ -41,6 +41,8 @@ pub struct PosterLauncherApp {
     selected_item_key: Option<String>,
     pending_delete_item: Option<MediaItem>,
     deleting_item_key: Option<String>,
+    pending_mark_watched_item: Option<MediaItem>,
+    marking_watched_item_key: Option<String>,
     status_text: String,
     error_text: Option<String>,
     is_loading_sections: bool,
@@ -77,6 +79,8 @@ impl PosterLauncherApp {
             selected_item_key: None,
             pending_delete_item: None,
             deleting_item_key: None,
+            pending_mark_watched_item: None,
+            marking_watched_item_key: None,
             status_text: "Fill in Plex URL, token, and VLC path first.".to_owned(),
             error_text: None,
             is_loading_sections: false,
@@ -329,6 +333,33 @@ impl PosterLauncherApp {
                         }
                     }
                 }
+                WorkerEvent::MovieMarkedWatched {
+                    rating_key,
+                    title,
+                    result,
+                } => {
+                    if self.marking_watched_item_key.as_deref() == Some(rating_key.as_str()) {
+                        self.marking_watched_item_key = None;
+                    }
+
+                    match result {
+                        Ok(()) => {
+                            self.error_text = None;
+                            if let Some(item) = self
+                                .items
+                                .iter_mut()
+                                .find(|item| item.rating_key == rating_key)
+                            {
+                                item.view_count = Some(item.view_count.unwrap_or_default().max(1));
+                            }
+                            self.status_text = format!("Marked {} as watched.", title);
+                        }
+                        Err(error) => {
+                            self.error_text =
+                                Some(format!("Failed to mark {} as watched: {}", title, error));
+                        }
+                    }
+                }
             }
             ctx.request_repaint();
         }
@@ -427,6 +458,31 @@ impl PosterLauncherApp {
         self.status_text = format!("Deleting {} from Plex...", item.title);
         self.deleting_item_key = Some(item.rating_key.clone());
         let _ = self.worker_tx.send(WorkerCommand::DeleteMovie {
+            config: self.config.clone(),
+            rating_key: item.rating_key,
+            title: item.title,
+        });
+    }
+
+    fn request_mark_watched(&mut self, item: MediaItem) {
+        if self.marking_watched_item_key.is_some() {
+            return;
+        }
+        self.pending_mark_watched_item = Some(item);
+    }
+
+    fn confirm_mark_watched(&mut self) {
+        let Some(item) = self.pending_mark_watched_item.take() else {
+            return;
+        };
+        if self.marking_watched_item_key.is_some() {
+            return;
+        }
+
+        self.error_text = None;
+        self.status_text = format!("Marking {} as watched...", item.title);
+        self.marking_watched_item_key = Some(item.rating_key.clone());
+        let _ = self.worker_tx.send(WorkerCommand::MarkMovieWatched {
             config: self.config.clone(),
             rating_key: item.rating_key,
             title: item.title,
@@ -557,6 +613,26 @@ impl eframe::App for PosterLauncherApp {
                             .clicked()
                         {
                             self.confirm_delete_item();
+                        }
+                    });
+                });
+        }
+
+        if let Some(item) = self.pending_mark_watched_item.clone() {
+            egui::Window::new("Confirm Watched")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.label(format!("Have you watched \"{}\"?", item.title));
+                    ui.label("Selecting Yes will mark this movie as watched in Plex.");
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("No").clicked() {
+                            self.pending_mark_watched_item = None;
+                        }
+                        if ui.button("Yes").clicked() {
+                            self.confirm_mark_watched();
                         }
                     });
                 });
@@ -761,24 +837,53 @@ impl eframe::App for PosterLauncherApp {
                     if let Some(progress) = continue_progress_text(&item) {
                         ui.label(format!("Progress: {}", progress));
                     }
+                    ui.label(if item.view_count.unwrap_or_default() > 0 {
+                        "Status: Watched"
+                    } else {
+                        "Status: Unwatched"
+                    });
                     ui.separator();
-                    ui.label(item.summary.as_deref().unwrap_or("No summary available."));
-                    ui.add_space(12.0);
-                    if ui.button("Play In VLC").clicked() {
-                        self.play_item(&item);
-                    }
                     let poster_is_loading = self.poster_jobs.contains(&item.rating_key);
                     let poster_label = if poster_is_loading {
-                        "Updating Poster..."
+                        "Updating..."
                     } else {
                         "Update Poster"
                     };
-                    if ui
-                        .add_enabled(!poster_is_loading, egui::Button::new(poster_label))
-                        .clicked()
-                    {
-                        self.refresh_poster(&item);
-                    }
+                    let is_watched = item.view_count.unwrap_or_default() > 0;
+                    let is_marking =
+                        self.marking_watched_item_key.as_deref() == Some(item.rating_key.as_str());
+                    let watched_label = if is_marking {
+                        "Marking..."
+                    } else if is_watched {
+                        "Watched"
+                    } else {
+                        "Mark Watched"
+                    };
+
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().button_padding.x = 4.0;
+                        if ui.button("Play").clicked() {
+                            self.play_item(&item);
+                        }
+                        if ui
+                            .add_enabled(!poster_is_loading, egui::Button::new(poster_label))
+                            .clicked()
+                        {
+                            self.refresh_poster(&item);
+                        }
+                        if ui
+                            .add_enabled(
+                                !is_watched
+                                    && !is_marking
+                                    && self.marking_watched_item_key.is_none(),
+                                egui::Button::new(watched_label),
+                            )
+                            .clicked()
+                        {
+                            self.request_mark_watched(item.clone());
+                        }
+                    });
+                    ui.add_space(8.0);
                     let is_deleting =
                         self.deleting_item_key.as_deref() == Some(item.rating_key.as_str());
                     let delete_label = if is_deleting {
@@ -795,8 +900,11 @@ impl eframe::App for PosterLauncherApp {
                         )
                         .clicked()
                     {
-                        self.request_delete_item(item);
+                        self.request_delete_item(item.clone());
                     }
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.label(item.summary.as_deref().unwrap_or("No summary available."));
                 } else {
                     ui.label("Select a poster to inspect and play it here.");
                 }
@@ -850,7 +958,7 @@ impl eframe::App for PosterLauncherApp {
                             self.ensure_poster_texture(ctx, &item);
 
                             ui.vertical(|ui| {
-                                let clicked =
+                                let poster_response =
                                     if let Some(texture) = self.textures.get(&item.rating_key) {
                                         ui.add(egui::ImageButton::new((
                                             texture.id(),
@@ -859,10 +967,13 @@ impl eframe::App for PosterLauncherApp {
                                                 poster_grid::POSTER_HEIGHT,
                                             ),
                                         )))
-                                        .clicked()
                                     } else {
-                                        poster_grid::draw_placeholder(ui, &item.title).clicked()
+                                        poster_grid::draw_placeholder(ui, &item.title)
                                     };
+                                if item.view_count.unwrap_or_default() > 0 {
+                                    poster_grid::draw_watched_badge(ui, poster_response.rect);
+                                }
+                                let clicked = poster_response.clicked();
 
                                 ui.add_sized(
                                     [poster_grid::POSTER_CARD_WIDTH - 12.0, 0.0],
@@ -972,6 +1083,20 @@ fn spawn_worker(cache: ThumbnailCache) -> (Sender<WorkerCommand>, Receiver<Worke
                         result,
                     });
                 }
+                WorkerCommand::MarkMovieWatched {
+                    config,
+                    rating_key,
+                    title,
+                } => {
+                    let result = PlexClient::new(config.server_url_trimmed(), config.token)
+                        .and_then(|client| client.mark_movie_watched(&rating_key))
+                        .map_err(|error| error.to_string());
+                    let _ = event_tx.send(WorkerEvent::MovieMarkedWatched {
+                        rating_key,
+                        title,
+                        result,
+                    });
+                }
             }
         }
     });
@@ -1032,6 +1157,11 @@ enum WorkerCommand {
         rating_key: String,
         title: String,
     },
+    MarkMovieWatched {
+        config: AppConfig,
+        rating_key: String,
+        title: String,
+    },
 }
 
 fn continue_progress_text(item: &MediaItem) -> Option<String> {
@@ -1069,6 +1199,11 @@ enum WorkerEvent {
         rating_key: String,
     },
     MovieDeleted {
+        rating_key: String,
+        title: String,
+        result: Result<(), String>,
+    },
+    MovieMarkedWatched {
         rating_key: String,
         title: String,
         result: Result<(), String>,

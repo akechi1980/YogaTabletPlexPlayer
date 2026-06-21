@@ -270,6 +270,19 @@ impl PlexClient {
         Ok(())
     }
 
+    /// 将影片标记为已看。
+    pub fn mark_movie_watched(&self, rating_key: &str) -> Result<(), PlexError> {
+        let url = self.absolute_url(
+            "/:/scrobble",
+            &[
+                ("key", rating_key),
+                ("identifier", "com.plexapp.plugins.library"),
+            ],
+        )?;
+        self.http.get(url).send()?.error_for_status()?;
+        Ok(())
+    }
+
     pub fn download_thumbnail(&self, thumb_path: &str) -> Result<Vec<u8>, PlexError> {
         let url = self.build_thumbnail_url(thumb_path, 180, 270)?;
         let response = self.http.get(url).send()?.error_for_status()?;
@@ -367,6 +380,8 @@ struct VideoNode {
     duration: Option<u64>,
     #[serde(rename = "@viewOffset")]
     view_offset: Option<u64>,
+    #[serde(rename = "@viewCount")]
+    view_count: Option<u32>,
     #[serde(rename = "@lastViewedAt")]
     last_viewed_at: Option<i64>,
     #[serde(rename = "Media", default)]
@@ -422,6 +437,7 @@ fn media_item_from_video(video: VideoNode) -> MediaItem {
         library_section_title: video.library_section_title,
         duration,
         view_offset: video.view_offset,
+        view_count: video.view_count,
         last_viewed_at: video.last_viewed_at,
         part_key,
     }
