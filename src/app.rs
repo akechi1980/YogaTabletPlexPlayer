@@ -691,18 +691,22 @@ impl eframe::App for PosterLauncherApp {
                         } else {
                             let mut remove_index = None;
                             let history_items = self.config.search_history.clone();
-                            for (index, entry) in history_items.iter().enumerate() {
-                                ui.horizontal(|ui| {
-                                    if ui.selectable_label(false, entry).clicked() {
-                                        self.search_text = entry.clone();
-                                        self.apply_search();
-                                        ui.close_menu();
-                                    }
-                                    if ui.small_button("Delete").clicked() {
-                                        remove_index = Some(index);
+                            egui::ScrollArea::vertical()
+                                .max_height(400.0)
+                                .show(ui, |ui| {
+                                    for (index, entry) in history_items.iter().enumerate() {
+                                        ui.horizontal(|ui| {
+                                            if ui.selectable_label(false, entry).clicked() {
+                                                self.search_text = entry.clone();
+                                                self.apply_search();
+                                                ui.close_menu();
+                                            }
+                                            if ui.small_button("Delete").clicked() {
+                                                remove_index = Some(index);
+                                            }
+                                        });
                                     }
                                 });
-                            }
 
                             if let Some(index) = remove_index {
                                 self.delete_search_history_at(index);
