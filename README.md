@@ -7,12 +7,26 @@
 A lightweight desktop launcher: browse your Plex movie libraries as a poster wall and open titles in an external VLC player.
 
 **中文**  
-以下为程序**启动后的界面效果**示意（具体以本机为准）。
+以下为程序启动后的界面。夜间是铁灰，白天是灰白。详情栏默认就在右侧。
 
 **English**  
-**Screenshot of the UI** after launching the app (your layout may differ).
+Screenshots after launch. Night is iron gray; day is gray-white. The detail column stays on the right.
 
-![程序启动后的界面效果 / App UI after launch](snap.jpg)
+**夜间海报墙 / Night poster wall**
+
+![夜间海报墙 / Night poster wall](snap.jpg)
+
+**白天海报墙 / Day poster wall**
+
+![白天海报墙 / Day poster wall](snap-day.jpg)
+
+**搜索历史 / Search history**
+
+![搜索历史 / Search history](snap-history.jpg)
+
+**连接与播放设置（白天） / Connection settings (day)**
+
+![连接与播放设置 / Connection settings](snap-settings.jpg)
 
 ---
 
@@ -34,7 +48,7 @@ Many **older Win32 tablets** (including some **Yoga**-class devices running **32
 - 本地保存配置：Plex 服务器 URL、Plex Token、VLC 可执行文件路径  
 - 从 Plex 读取电影库  
 - 在可滚动网格中显示海报  
-- 按标题关键词筛选已加载的影片  
+- 按标题搜索当前电影库  
 - 使用外部 `vlc.exe`（或本机 VLC 路径）以 Plex 媒体 URL 启动播放  
 - 在本地缓存海报缩略图  
 
@@ -42,7 +56,7 @@ Many **older Win32 tablets** (including some **Yoga**-class devices running **32
 - Persist config locally: Plex server URL, Plex token, VLC executable path  
 - Read movie libraries from Plex  
 - Show posters in a scrollable grid  
-- Filter loaded titles by keyword  
+- Search the current movie library by title  
 - Launch playback via external `vlc.exe` (or your platform’s VLC path) with Plex media URLs  
 - Cache poster thumbnails locally  
 
@@ -105,15 +119,18 @@ Rust · `eframe` / `egui` · `reqwest` · `quick-xml` · `serde` + `toml`
 |-- config.example.toml
 `-- src
     |-- app.rs
+    |-- app_ui.rs
     |-- cache.rs
     |-- config.rs
     |-- main.rs
     |-- models.rs
     |-- player.rs
     |-- plex.rs
+    |-- touch_keyboard.rs
     `-- ui
         |-- mod.rs
-        `-- poster_grid.rs
+        |-- poster_grid.rs
+        `-- theme.rs
 ```
 
 ---
@@ -295,15 +312,17 @@ Quick path: run `./start.sh` → edit `./config.toml` with your `token` → run 
 
 **中文**  
 - 加载电影库列表；选库后加载第一页海报  
-- 海报墙可滚动与手动分页（「加载更多」等）  
-- 搜索仅过滤**已加载到内存**的条目  
-- 「Play」启动外部 VLC；点击海报在右侧打开详情  
+- 海报墙可滚动，顶部和列表底部都可以「加载更多电影」  
+- 搜索向当前片库查询，并保留最近的搜索记录  
+- 右侧详情栏一直显示，未选中时为空白；选中后可「播放」或「继续播放」，也可更新海报、切换已看状态  
+- 顶栏可在夜间铁灰和白天灰白之间切换；窗口使用系统标题栏，默认内尺寸 1280×720  
 
 **English**  
 - Loads libraries; after selection, loads the first page of posters  
-- Scrollable grid with manual pagination (“load more”, etc.)  
-- Search filters **only titles already loaded in memory**  
-- “Play” launches external VLC; clicking a poster opens details on the right  
+- Scrollable grid; “加载更多电影” appears in the section header and at the bottom of the list  
+- Search queries the current library and keeps recent searches  
+- The detail column stays visible and is blank until a poster is selected; then you can play or resume, refresh the poster, or toggle watched state  
+- The top bar switches between iron-gray night and gray-white day; the window uses the system title bar and defaults to an inner size of 1280×720  
 
 ---
 
