@@ -44,6 +44,8 @@ pub struct PosterLauncherApp {
     items: Vec<MediaItem>,
     textures: HashMap<String, TextureHandle>,
     poster_jobs: HashSet<String>,
+    /// 本帧还能在界面线程解码几张海报。多了会把笔的点击堵在解码后面。
+    poster_decodes_left: u8,
     search_text: String,
     active_search_query: Option<String>,
     sort_mode: MovieSort,
@@ -89,6 +91,7 @@ impl PosterLauncherApp {
             items: Vec::new(),
             textures: HashMap::new(),
             poster_jobs: HashSet::new(),
+            poster_decodes_left: 0,
             search_text: String::new(),
             active_search_query: None,
             sort_mode: MovieSort::Newest,
@@ -543,6 +546,11 @@ impl PosterLauncherApp {
 
         let cached = self.cache.poster_path(&item.rating_key);
         if cached.exists() {
+            if self.poster_decodes_left == 0 {
+                ctx.request_repaint();
+                return;
+            }
+            self.poster_decodes_left -= 1;
             if let Some(texture) = load_texture_from_path(ctx, &cached, &item.rating_key) {
                 self.textures.insert(item.rating_key.clone(), texture);
             }
@@ -690,6 +698,7 @@ impl PosterLauncherApp {
 
 impl eframe::App for PosterLauncherApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poster_decodes_left = 1;
         self.process_worker_events(ctx);
         self.draw_ui(ctx);
     }
@@ -819,7 +828,11 @@ fn load_texture_from_path(
     cache_key: &str,
 ) -> Option<TextureHandle> {
     let bytes = std::fs::read(path).ok()?;
-    let image = image::load_from_memory(&bytes).ok()?.to_rgba8();
+    // 海报在卡片上大约一百多像素宽，缩小后再上传，避免旧平板每帧都画整张原图。
+    let image = image::load_from_memory(&bytes)
+        .ok()?
+        .thumbnail(280, 420)
+        .to_rgba8();
     let size = [image.width() as usize, image.height() as usize];
     let pixels = image.into_raw();
     let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);

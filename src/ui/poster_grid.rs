@@ -4,12 +4,12 @@ use super::theme::colors;
 
 /// 海报网格列数和单卡宽度。列宽随可用空间变化，打开详情栏时会自动少一列。
 pub fn grid_metrics(available_width: f32) -> (usize, f32) {
-    let gap = 16.0;
-    let min_card = 148.0;
+    let gap = 10.0;
+    let min_card = 118.0;
     let columns = ((available_width + gap) / (min_card + gap))
         .floor()
         .max(2.0) as usize;
-    let columns = columns.clamp(2, 6);
+    let columns = columns.clamp(2, 7);
     let card_w = (available_width - gap * (columns.saturating_sub(1) as f32)) / columns as f32;
     (columns, card_w.max(96.0))
 }
@@ -117,10 +117,10 @@ fn paint_progress(ui: &egui::Ui, poster_rect: Rect, progress: f32) {
 }
 
 fn draw_clamped_title(ui: &mut egui::Ui, title: &str, width: f32) -> egui::Response {
-    let font = FontId::proportional(13.0);
+    let font = FontId::proportional(12.0);
     let color = colors().text;
     let galley = ui.fonts(|fonts| fonts.layout(title.to_owned(), font, color, width));
-    let height = 38.0;
+    let height = 32.0;
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
     ui.painter()
         .with_clip_rect(rect)

@@ -8,15 +8,15 @@ use crate::ui::poster_grid;
 use crate::config::ThemeMode;
 use crate::ui::theme::{self, colors};
 
-const PAD: f32 = 24.0;
-const DETAIL_PAD: f32 = 22.0;
-const TOP_H: f32 = 72.0;
-const TOOL_H: f32 = 64.0;
-const SECTION_H: f32 = 66.0;
-const DETAIL_W: f32 = 328.0;
-const CTRL_H: f32 = 44.0;
-const FIELD_H: f32 = 52.0;
-const DETAIL_BTN_H: f32 = 32.0;
+const PAD: f32 = 14.0;
+const DETAIL_PAD: f32 = 14.0;
+const TOP_H: f32 = 52.0;
+const TOOL_H: f32 = 48.0;
+const SECTION_H: f32 = 46.0;
+const DETAIL_W: f32 = 268.0;
+const CTRL_H: f32 = 36.0;
+const FIELD_H: f32 = 44.0;
+const DETAIL_BTN_H: f32 = 30.0;
 
 use super::{BrowseMode, HomeTab, PosterLauncherApp};
 
@@ -39,8 +39,6 @@ impl PosterLauncherApp {
                 self.draw_history(ctx);
             }
         }
-
-        draw_resize_borders(ctx);
     }
 
     fn draw_top_bar(&mut self, ctx: &egui::Context) {
@@ -53,7 +51,7 @@ impl PosterLauncherApp {
             .frame(bar_frame(colors().top))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.spacing_mut().item_spacing.x = 22.0;
+                    ui.spacing_mut().item_spacing.x = 12.0;
                     let title_max = (ui.ctx().screen_rect().width() * 0.24).clamp(108.0, 220.0);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 12.0;
@@ -85,8 +83,6 @@ impl PosterLauncherApp {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 8.0;
-                        window_controls(ui);
-                        caption_gap(ui);
                         if icon_button(ui, "⚙", "设置").clicked() {
                             self.show_settings = true;
                             self.show_history = false;
@@ -169,7 +165,6 @@ impl PosterLauncherApp {
                     });
                 });
                 edge_line(ui, true);
-                bind_window_drag(ui);
             });
 
         if let Some(id) = library_id {
@@ -319,11 +314,11 @@ impl PosterLauncherApp {
                                     let mut first_row = true;
                                     for row in (0..self.items.len()).collect::<Vec<_>>().chunks(columns) {
                                         if !first_row {
-                                            ui.add_space(22.0);
+                                            ui.add_space(12.0);
                                         }
                                         first_row = false;
                                         ui.horizontal_top(|ui| {
-                                            ui.spacing_mut().item_spacing.x = 16.0;
+                                            ui.spacing_mut().item_spacing.x = 10.0;
                                             for index in row {
                                                 let item = self.items[*index].clone();
                                                 self.ensure_poster_texture(ctx, &item);
@@ -362,7 +357,7 @@ impl PosterLauncherApp {
                                         }
                                     });
                                 }
-                                ui.add_space(28.0);
+                                ui.add_space(16.0);
                             });
                         });
                     });
@@ -743,7 +738,6 @@ impl PosterLauncherApp {
                     egui::Layout::left_to_right(egui::Align::Center),
                     "settings_header",
                 );
-                bind_window_drag_rect(&mut header_ui, header);
                 header_ui.spacing_mut().item_spacing.x = 12.0;
                 header_ui.add_space(PAD);
                 if header_ui.add(settings_close_button()).clicked() {
@@ -752,7 +746,6 @@ impl PosterLauncherApp {
                 header_ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     ui.add_space(PAD);
-                    window_controls(ui);
                     if let Some(mode) = theme_switch(ui, self.config.theme) {
                         self.config.theme = mode;
                         theme::set_mode(mode);
@@ -1090,12 +1083,12 @@ fn hairline(ui: &mut egui::Ui) {
 
 fn load_more_button() -> egui::Button<'static> {
     egui::Button::new("加载更多电影")
-        .min_size(Vec2::new(168.0, 36.0))
+        .min_size(Vec2::new(148.0, 32.0))
         .rounding(Rounding::same(9.0))
 }
 
 fn settings_close_button() -> egui::Button<'static> {
-    egui::Button::new("关闭").min_size(Vec2::new(88.0, 40.0))
+    egui::Button::new("关闭").min_size(Vec2::new(72.0, 32.0))
 }
 
 /// 横向排列时直接加入，让同一行按真实高度居中对齐。
@@ -1113,279 +1106,6 @@ fn put_button(ui: &mut egui::Ui, button: egui::Button<'_>) -> egui::Response {
     }
 }
 
-fn bind_window_drag(ui: &mut egui::Ui) {
-    bind_drag_response(ui.interact_bg(egui::Sense::click_and_drag()));
-}
-
-fn bind_window_drag_rect(ui: &mut egui::Ui, rect: egui::Rect) {
-    let response = ui.interact(rect, ui.id().with("window_drag"), egui::Sense::click_and_drag());
-    bind_drag_response(response);
-}
-
-fn bind_drag_response(response: egui::Response) {
-    let maximized = response.ctx.input(|input| input.viewport().maximized.unwrap_or(false));
-    if response.double_clicked() {
-        response
-            .ctx
-            .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-    }
-    if maximized || !response.dragged() {
-        return;
-    }
-    let delta = response.ctx.input(|input| input.pointer.delta());
-    if delta == Vec2::ZERO {
-        return;
-    }
-    if let Some(rect) = response.ctx.input(|input| input.viewport().outer_rect) {
-        response
-            .ctx
-            .send_viewport_cmd(egui::ViewportCommand::OuterPosition(rect.min + delta));
-    }
-}
-
-fn window_controls(ui: &mut egui::Ui) {
-    let maximized = ui.ctx().input(|input| input.viewport().maximized.unwrap_or(false));
-    ui.scope(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        // 外层是从右往左排，先放下的按钮靠右。
-        if caption_button(ui, Caption::Close).clicked() {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-        }
-        if caption_button(ui, Caption::Maximize { restore: maximized }).clicked() {
-            ui.ctx()
-                .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-        }
-    });
-}
-
-fn caption_gap(ui: &mut egui::Ui) {
-    ui.add_space(10.0);
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(1.0, 18.0), egui::Sense::hover());
-    ui.painter()
-        .vline(rect.center().x, rect.y_range(), Stroke::new(1.0, colors().line));
-    ui.add_space(10.0);
-}
-
-enum Caption {
-    Maximize { restore: bool },
-    Close,
-}
-
-fn caption_button(ui: &mut egui::Ui, kind: Caption) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(CTRL_H), egui::Sense::click());
-    let close = matches!(kind, Caption::Close);
-    let fill = if response.hovered() {
-        if close {
-            colors().danger_hover
-        } else {
-            colors().hover
-        }
-    } else {
-        Color32::TRANSPARENT
-    };
-    if fill != Color32::TRANSPARENT {
-        ui.painter().rect_filled(rect, Rounding::same(10.0), fill);
-    } else {
-        ui.painter().rect_stroke(
-            rect,
-            Rounding::same(10.0),
-            Stroke::new(1.0, colors().stroke),
-        );
-    }
-    let color = if close && response.hovered() {
-        Color32::WHITE
-    } else {
-        colors().text
-    };
-    paint_caption(ui, rect, &kind, color);
-    response.on_hover_text(match kind {
-        Caption::Close => "关闭",
-        Caption::Maximize { restore: true } => "还原",
-        Caption::Maximize { restore: false } => "最大化",
-    })
-}
-
-fn paint_caption(ui: &egui::Ui, rect: egui::Rect, kind: &Caption, color: Color32) {
-    let center = rect.center();
-    let painter = ui.painter();
-    match kind {
-        Caption::Maximize { restore: false } => {
-            let icon = egui::Rect::from_center_size(center, Vec2::splat(14.0));
-            painter.rect_stroke(icon, Rounding::same(1.5), Stroke::new(1.5, color));
-        }
-        Caption::Maximize { restore: true } => {
-            let back = egui::Rect::from_center_size(center + Vec2::new(-2.0, 2.0), Vec2::splat(8.0));
-            let front = egui::Rect::from_center_size(center + Vec2::new(2.0, -2.0), Vec2::splat(8.0));
-            painter.rect_stroke(back, Rounding::same(1.0), Stroke::new(1.3, color));
-            painter.rect_stroke(front, Rounding::same(1.0), Stroke::new(1.3, color));
-        }
-        Caption::Close => {
-            let d = 5.0;
-            let stroke = Stroke::new(1.5, color);
-            painter.line_segment(
-                [center + Vec2::new(-d, -d), center + Vec2::new(d, d)],
-                stroke,
-            );
-            painter.line_segment(
-                [center + Vec2::new(d, -d), center + Vec2::new(-d, d)],
-                stroke,
-            );
-        }
-    }
-}
-
-fn resize_by(ctx: &egui::Context, direction: egui::ResizeDirection) {
-    let delta = ctx.input(|input| input.pointer.delta());
-    if delta == Vec2::ZERO {
-        return;
-    }
-    let (inner, outer) = ctx.input(|input| (input.viewport().inner_rect, input.viewport().outer_rect));
-    let (Some(inner), Some(outer)) = (inner, outer) else {
-        return;
-    };
-    let mut size = inner.size();
-    let mut pos = outer.min;
-    use egui::ResizeDirection::*;
-    match direction {
-        East => size.x += delta.x,
-        West => {
-            size.x -= delta.x;
-            pos.x += delta.x;
-        }
-        South => size.y += delta.y,
-        North => {
-            size.y -= delta.y;
-            pos.y += delta.y;
-        }
-        SouthEast => {
-            size.x += delta.x;
-            size.y += delta.y;
-        }
-        SouthWest => {
-            size.x -= delta.x;
-            pos.x += delta.x;
-            size.y += delta.y;
-        }
-        NorthEast => {
-            size.x += delta.x;
-            size.y -= delta.y;
-            pos.y += delta.y;
-        }
-        NorthWest => {
-            size.x -= delta.x;
-            pos.x += delta.x;
-            size.y -= delta.y;
-            pos.y += delta.y;
-        }
-    }
-    let min = Vec2::new(960.0, 640.0);
-    let unclamped = size;
-    size.x = size.x.max(min.x);
-    size.y = size.y.max(min.y);
-    if (size.x - unclamped.x).abs() > 0.5 {
-        pos.x = outer.min.x;
-    }
-    if (size.y - unclamped.y).abs() > 0.5 {
-        pos.y = outer.min.y;
-    }
-    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
-    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
-}
-
-fn draw_resize_borders(ctx: &egui::Context) {
-    if ctx.input(|input| input.viewport().maximized.unwrap_or(false)) {
-        return;
-    }
-    let screen = ctx.screen_rect();
-    let edge = 5.0;
-    let corner = 12.0;
-    let borders = [
-        (
-            "n",
-            egui::Rect::from_min_max(
-                screen.left_top(),
-                egui::pos2(screen.right(), screen.top() + edge),
-            ),
-            egui::CursorIcon::ResizeVertical,
-            egui::ResizeDirection::North,
-        ),
-        (
-            "s",
-            egui::Rect::from_min_max(
-                egui::pos2(screen.left(), screen.bottom() - edge),
-                screen.right_bottom(),
-            ),
-            egui::CursorIcon::ResizeVertical,
-            egui::ResizeDirection::South,
-        ),
-        (
-            "w",
-            egui::Rect::from_min_max(
-                screen.left_top(),
-                egui::pos2(screen.left() + edge, screen.bottom()),
-            ),
-            egui::CursorIcon::ResizeHorizontal,
-            egui::ResizeDirection::West,
-        ),
-        (
-            "e",
-            egui::Rect::from_min_max(
-                egui::pos2(screen.right() - edge, screen.top()),
-                screen.right_bottom(),
-            ),
-            egui::CursorIcon::ResizeHorizontal,
-            egui::ResizeDirection::East,
-        ),
-        (
-            "nw",
-            egui::Rect::from_min_size(screen.left_top(), Vec2::splat(corner)),
-            egui::CursorIcon::ResizeNwSe,
-            egui::ResizeDirection::NorthWest,
-        ),
-        (
-            "ne",
-            egui::Rect::from_min_size(
-                egui::pos2(screen.right() - corner, screen.top()),
-                Vec2::splat(corner),
-            ),
-            egui::CursorIcon::ResizeNeSw,
-            egui::ResizeDirection::NorthEast,
-        ),
-        (
-            "sw",
-            egui::Rect::from_min_size(
-                egui::pos2(screen.left(), screen.bottom() - corner),
-                Vec2::splat(corner),
-            ),
-            egui::CursorIcon::ResizeNeSw,
-            egui::ResizeDirection::SouthWest,
-        ),
-        (
-            "se",
-            egui::Rect::from_min_size(
-                egui::pos2(screen.right() - corner, screen.bottom() - corner),
-                Vec2::splat(corner),
-            ),
-            egui::CursorIcon::ResizeNwSe,
-            egui::ResizeDirection::SouthEast,
-        ),
-    ];
-    for (id, rect, cursor, direction) in borders {
-        egui::Area::new(egui::Id::new(("resize", id)))
-            .fixed_pos(rect.min)
-            .order(egui::Order::Foreground)
-            .interactable(true)
-            .show(ctx, |ui| {
-                let response = ui.allocate_response(rect.size(), egui::Sense::click_and_drag());
-                if response.hovered() || response.dragged() {
-                    ui.ctx().set_cursor_icon(cursor);
-                }
-                if response.dragged() {
-                    resize_by(ui.ctx(), direction);
-                }
-            });
-    }
-}
 
 fn brand_titles(ui: &mut egui::Ui, max_width: f32) {
     let title_font = egui::FontId::proportional(17.0);
@@ -1408,7 +1128,7 @@ fn brand_titles(ui: &mut egui::Ui, max_width: f32) {
 }
 
 fn brand_mark(ui: &mut egui::Ui) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(36.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(30.0), egui::Sense::hover());
     ui.painter()
         .rect_filled(rect, Rounding::same(11.0), colors().brand);
     ui.painter().text(
