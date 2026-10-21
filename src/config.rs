@@ -4,6 +4,15 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// 界面配色。夜间是铁灰，白天是灰白。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    #[default]
+    Night,
+    Day,
+}
+
 /// 用户可持久化的连接与播放器设置，序列化为 TOML。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -13,6 +22,8 @@ pub struct AppConfig {
     pub selected_library_id: String,
     #[serde(default)]
     pub search_history: Vec<String>,
+    #[serde(default)]
+    pub theme: ThemeMode,
 }
 
 impl AppConfig {

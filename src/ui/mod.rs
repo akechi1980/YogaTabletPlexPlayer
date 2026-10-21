@@ -1,2 +1,3 @@
-//! UI 子模块：海报网格布局与占位绘制。
+//! UI 子模块：配色与海报卡片。
 pub mod poster_grid;
+pub mod theme;

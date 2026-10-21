@@ -30,7 +30,8 @@ fn main() -> Result<(), eframe::Error> {
         renderer: eframe::Renderer::Glow,
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 780.0])
-            .with_min_inner_size([960.0, 640.0]),
+            .with_min_inner_size([960.0, 640.0])
+            .with_decorations(false),
         ..Default::default()
     };
 

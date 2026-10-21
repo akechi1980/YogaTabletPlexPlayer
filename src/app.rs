@@ -3,16 +3,17 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
-use eframe::egui::{self, ColorImage, RichText, TextureHandle, TextureOptions};
+use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 
 use crate::cache::ThumbnailCache;
 use crate::config::AppConfig;
-use crate::models::{LibrarySection, MediaItem, MoviePage};
+use crate::models::{LibrarySection, MediaItem, MoviePage, MovieSort};
 use crate::player;
 use crate::plex::PlexClient;
-use crate::touch_keyboard;
-use crate::ui::poster_grid;
 use crate::AppPaths;
+
+#[path = "app_ui.rs"]
+mod app_ui;
 
 /// 每次向 Plex 请求影片列表的条数（分页大小）。
 const PAGE_SIZE: usize = 60;
@@ -26,6 +27,14 @@ enum BrowseMode {
     ContinueWatching,
 }
 
+/// 顶栏三个浏览页签。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HomeTab {
+    All,
+    Continue,
+    Recent,
+}
+
 /// 主界面状态：配置、已加载库/影片、海报纹理，以及后台线程通信。
 pub struct PosterLauncherApp {
     config: AppConfig,
@@ -37,7 +46,12 @@ pub struct PosterLauncherApp {
     poster_jobs: HashSet<String>,
     search_text: String,
     active_search_query: Option<String>,
-    sort_by_newest: bool,
+    sort_mode: MovieSort,
+    home_tab: HomeTab,
+    show_settings: bool,
+    show_history: bool,
+    /// 用户手动点了「更新海报」时记下 rating key，避免每次自动下载都改状态栏。
+    poster_refresh_key: Option<String>,
     selected_item_key: Option<String>,
     pending_delete_item: Option<MediaItem>,
     deleting_item_key: Option<String>,
@@ -57,8 +71,10 @@ pub struct PosterLauncherApp {
 }
 
 impl PosterLauncherApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>, paths: AppPaths) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, paths: AppPaths) -> Self {
         let config = AppConfig::load_or_default(&paths.config_file).unwrap_or_default();
+        crate::ui::theme::set_mode(config.theme);
+        crate::ui::theme::apply(&cc.egui_ctx);
         let cache = ThumbnailCache::new(paths.cache_dir.clone());
         let _ = cache.ensure_dir();
 
@@ -75,13 +91,17 @@ impl PosterLauncherApp {
             poster_jobs: HashSet::new(),
             search_text: String::new(),
             active_search_query: None,
-            sort_by_newest: false,
+            sort_mode: MovieSort::Newest,
+            home_tab: HomeTab::All,
+            show_settings: false,
+            show_history: false,
+            poster_refresh_key: None,
             selected_item_key: None,
             pending_delete_item: None,
             deleting_item_key: None,
             pending_mark_watched_item: None,
             marking_watched_item_key: None,
-            status_text: "Fill in Plex URL, token, and VLC path first.".to_owned(),
+            status_text: "请先在设置中填写 Plex 地址、Token 和 VLC 路径。".to_owned(),
             error_text: None,
             is_loading_sections: false,
             is_loading_movies: false,
@@ -112,8 +132,7 @@ impl PosterLauncherApp {
             Ok(()) => {
                 self.error_text = None;
                 if show_success_message {
-                    self.status_text =
-                        format!("Configuration saved to {}", self.config_path.display());
+                    self.status_text = "设置已保存".to_owned();
                 }
             }
             Err(error) => self.error_text = Some(error.to_string()),
@@ -145,13 +164,13 @@ impl PosterLauncherApp {
 
     fn load_sections(&mut self) {
         if !self.config.is_ready() {
-            self.error_text = Some("A valid Plex URL and token are required.".to_owned());
+            self.error_text = Some("需要有效的 Plex 地址和 Token。".to_owned());
             return;
         }
 
         self.error_text = None;
         self.is_loading_sections = true;
-        self.status_text = "Loading Plex movie libraries...".to_owned();
+        self.status_text = "正在加载片库…".to_owned();
         let _ = self
             .worker_tx
             .send(WorkerCommand::LoadSections(self.config.clone()));
@@ -159,11 +178,14 @@ impl PosterLauncherApp {
 
     fn reload_movies(&mut self) {
         if self.config.selected_library_id.trim().is_empty() {
-            self.error_text = Some("Choose a movie library first.".to_owned());
+            self.error_text = Some("请先选择一个电影库。".to_owned());
             return;
         }
 
         self.browse_mode = BrowseMode::Library;
+        if self.home_tab == HomeTab::Continue {
+            self.home_tab = HomeTab::All;
+        }
         self.active_search_query = None;
         self.error_text = None;
         self.items.clear();
@@ -187,17 +209,17 @@ impl PosterLauncherApp {
         self.is_loading_movies = true;
         self.status_text = match self.active_search_query.as_deref() {
             Some(query) => format!(
-                "Searching \"{}\" page {}...",
+                "正在搜索「{}」第 {} 页…",
                 query,
                 self.next_start / PAGE_SIZE + 1
             ),
-            None => format!("Loading page {}...", self.next_start / PAGE_SIZE + 1),
+            None => format!("正在加载第 {} 页…", self.next_start / PAGE_SIZE + 1),
         };
         let _ = self.worker_tx.send(WorkerCommand::LoadMovies {
             config: self.config.clone(),
             section_id: self.config.selected_library_id.clone(),
             search_query: self.active_search_query.clone(),
-            newest_first: self.sort_by_newest,
+            sort: self.sort_mode,
             start: self.next_start,
             size: PAGE_SIZE,
         });
@@ -205,10 +227,11 @@ impl PosterLauncherApp {
 
     fn apply_search(&mut self) {
         if self.config.selected_library_id.trim().is_empty() {
-            self.error_text = Some("Choose a movie library first.".to_owned());
+            self.error_text = Some("请先选择一个电影库。".to_owned());
             return;
         }
 
+        self.home_tab = HomeTab::All;
         let query = self.search_text.trim().to_owned();
         if query.is_empty() {
             self.reload_movies();
@@ -243,7 +266,7 @@ impl PosterLauncherApp {
         self.next_start = 0;
         self.total_size = 0;
         self.is_loading_movies = true;
-        self.status_text = "Loading recent and continue-watching items...".to_owned();
+        self.status_text = "正在加载继续观看…".to_owned();
         let _ = self
             .worker_tx
             .send(WorkerCommand::LoadContinueWatching(self.config.clone()));
@@ -270,10 +293,9 @@ impl PosterLauncherApp {
                                 }
                             }
                             self.status_text =
-                                format!("Loaded {} movie libraries.", self.libraries.len());
-                            if !self.config.selected_library_id.trim().is_empty()
-                                && self.items.is_empty()
-                            {
+                                format!("已载入 {} 个电影库", self.libraries.len());
+                            if !self.config.selected_library_id.trim().is_empty() {
+                                self.save_config_silently();
                                 self.reload_movies();
                             }
                         }
@@ -299,17 +321,24 @@ impl PosterLauncherApp {
                     if let Some(texture) = load_texture_from_path(ctx, &path, &rating_key) {
                         self.textures.insert(rating_key.clone(), texture);
                     }
-                    if let Some(item) = self.items.iter().find(|item| item.rating_key == rating_key)
-                    {
-                        self.status_text = format!("Updated poster for {}.", item.title);
+                    if self.poster_refresh_key.as_deref() == Some(rating_key.as_str()) {
+                        self.poster_refresh_key = None;
+                        if let Some(item) =
+                            self.items.iter().find(|item| item.rating_key == rating_key)
+                        {
+                            self.status_text = format!("已更新《{}》的海报", item.title);
+                        }
                     }
                 }
                 WorkerEvent::PosterFailed { rating_key } => {
                     self.poster_jobs.remove(&rating_key);
-                    if let Some(item) = self.items.iter().find(|item| item.rating_key == rating_key)
-                    {
-                        self.error_text =
-                            Some(format!("Failed to update poster for {}.", item.title));
+                    if self.poster_refresh_key.as_deref() == Some(rating_key.as_str()) {
+                        self.poster_refresh_key = None;
+                        if let Some(item) =
+                            self.items.iter().find(|item| item.rating_key == rating_key)
+                        {
+                            self.error_text = Some(format!("更新《{}》的海报失败。", item.title));
+                        }
                     }
                 }
                 WorkerEvent::MovieDeleted {
@@ -325,17 +354,17 @@ impl PosterLauncherApp {
                         Ok(()) => {
                             self.error_text = None;
                             self.remove_deleted_item(&rating_key);
-                            self.status_text = format!("Deleted {} from Plex.", title);
+                            self.status_text = format!("已从 Plex 删除《{}》", title);
                         }
                         Err(error) => {
-                            self.error_text =
-                                Some(format!("Failed to delete {}: {}", title, error));
+                            self.error_text = Some(format!("删除《{}》失败：{}", title, error));
                         }
                     }
                 }
                 WorkerEvent::MovieMarkedWatched {
                     rating_key,
                     title,
+                    watched,
                     result,
                 } => {
                     if self.marking_watched_item_key.as_deref() == Some(rating_key.as_str()) {
@@ -350,13 +379,21 @@ impl PosterLauncherApp {
                                 .iter_mut()
                                 .find(|item| item.rating_key == rating_key)
                             {
-                                item.view_count = Some(item.view_count.unwrap_or_default().max(1));
+                                if watched {
+                                    item.view_count = Some(item.view_count.unwrap_or_default().max(1));
+                                } else {
+                                    item.view_count = Some(0);
+                                    item.view_offset = None;
+                                }
                             }
-                            self.status_text = format!("Marked {} as watched.", title);
+                            self.status_text = if watched {
+                                format!("已将《{}》标为已看", title)
+                            } else {
+                                format!("已将《{}》标为未看", title)
+                            };
                         }
                         Err(error) => {
-                            self.error_text =
-                                Some(format!("Failed to mark {} as watched: {}", title, error));
+                            self.error_text = Some(format!("标记《{}》失败：{}", title, error));
                         }
                     }
                 }
@@ -394,36 +431,15 @@ impl PosterLauncherApp {
         self.total_size = page.total_size;
         self.items.extend(page.items);
         self.status_text = match self.browse_mode {
-            BrowseMode::Library => match self.active_search_query.as_deref() {
-                Some(query) => format!(
-                    "Loaded {}/{} search results for \"{}\".",
-                    self.items.len(),
-                    self.total_size.max(self.items.len()),
-                    query
-                ),
-                None => format!(
-                    "Loaded {}/{} movies.",
-                    self.items.len(),
-                    self.total_size.max(self.items.len())
-                ),
-            },
+            BrowseMode::Library => format!(
+                "当前显示 {} / {} 部",
+                self.items.len(),
+                self.total_size.max(self.items.len())
+            ),
             BrowseMode::ContinueWatching => {
-                format!("Loaded {} recent / continue items.", self.items.len())
+                format!("继续观看：{} 部", self.items.len())
             }
         };
-    }
-
-    fn browse_mode_title(&self) -> &'static str {
-        match self.browse_mode {
-            BrowseMode::Library => {
-                if self.active_search_query.is_some() {
-                    "Search Results"
-                } else {
-                    "Library"
-                }
-            }
-            BrowseMode::ContinueWatching => "Recent & Continue Watching",
-        }
     }
 
     fn selected_library_title(&self) -> String {
@@ -455,7 +471,7 @@ impl PosterLauncherApp {
         }
 
         self.error_text = None;
-        self.status_text = format!("Deleting {} from Plex...", item.title);
+        self.status_text = format!("正在从 Plex 删除《{}》…", item.title);
         self.deleting_item_key = Some(item.rating_key.clone());
         let _ = self.worker_tx.send(WorkerCommand::DeleteMovie {
             config: self.config.clone(),
@@ -479,13 +495,19 @@ impl PosterLauncherApp {
             return;
         }
 
+        let mark_watched = item.view_count.unwrap_or_default() == 0;
         self.error_text = None;
-        self.status_text = format!("Marking {} as watched...", item.title);
+        self.status_text = if mark_watched {
+            format!("正在标记《{}》为已看…", item.title)
+        } else {
+            format!("正在标记《{}》为未看…", item.title)
+        };
         self.marking_watched_item_key = Some(item.rating_key.clone());
         let _ = self.worker_tx.send(WorkerCommand::MarkMovieWatched {
             config: self.config.clone(),
             rating_key: item.rating_key,
             title: item.title,
+            watched: mark_watched,
         });
     }
 
@@ -495,12 +517,13 @@ impl PosterLauncherApp {
         }
 
         let Some(thumb) = item.thumb.clone() else {
-            self.error_text = Some(format!("{} does not expose a poster path.", item.title));
+            self.error_text = Some(format!("《{}》没有海报地址。", item.title));
             return;
         };
 
         self.error_text = None;
-        self.status_text = format!("Refreshing poster for {}...", item.title);
+        self.poster_refresh_key = Some(item.rating_key.clone());
+        self.status_text = format!("正在更新《{}》的海报…", item.title);
         self.textures.remove(&item.rating_key);
         self.poster_jobs.insert(item.rating_key.clone());
         let _ = self.worker_tx.send(WorkerCommand::FetchPoster {
@@ -541,10 +564,7 @@ impl PosterLauncherApp {
     /// 根据媒体分片 key 构造流地址并启动 VLC。
     fn play_item(&mut self, item: &MediaItem) {
         let Some(part_key) = item.part_key.as_deref() else {
-            self.error_text = Some(format!(
-                "{} does not expose a playable media part.",
-                item.title
-            ));
+            self.error_text = Some(format!("《{}》没有可播放的媒体文件。", item.title));
             return;
         };
 
@@ -575,14 +595,95 @@ impl PosterLauncherApp {
                 self.error_text = None;
                 self.status_text = match item.view_offset {
                     Some(offset_ms) if offset_ms >= 1_000 => format!(
-                        "Launched VLC for {} at {}",
+                        "已用 VLC 打开《{}》，从 {} 继续",
                         item.title,
                         format_resume_time(offset_ms)
                     ),
-                    _ => format!("Launched VLC for {}", item.title),
+                    _ => format!("已用 VLC 打开《{}》", item.title),
                 };
             }
             Err(error) => self.error_text = Some(error.to_string()),
+        }
+    }
+
+    fn activate_tab(&mut self, tab: HomeTab) {
+        if self.home_tab == tab
+            && match tab {
+                HomeTab::Continue => self.browse_mode == BrowseMode::ContinueWatching,
+                HomeTab::All => {
+                    self.browse_mode == BrowseMode::Library && self.active_search_query.is_none()
+                }
+                HomeTab::Recent => {
+                    self.browse_mode == BrowseMode::Library
+                        && self.sort_mode == MovieSort::Newest
+                        && self.active_search_query.is_none()
+                }
+            }
+        {
+            return;
+        }
+
+        self.show_history = false;
+        self.home_tab = tab;
+        match tab {
+            HomeTab::All => {
+                self.active_search_query = None;
+                self.search_text.clear();
+                self.reload_movies();
+            }
+            HomeTab::Recent => {
+                self.sort_mode = MovieSort::Newest;
+                self.active_search_query = None;
+                self.search_text.clear();
+                self.reload_movies();
+            }
+            HomeTab::Continue => self.load_continue_watching(),
+        }
+    }
+
+    fn set_sort(&mut self, sort: MovieSort) {
+        if self.sort_mode == sort || self.home_tab == HomeTab::Continue {
+            return;
+        }
+        self.sort_mode = sort;
+        if self.home_tab == HomeTab::Recent && sort != MovieSort::Newest {
+            self.home_tab = HomeTab::All;
+        }
+        self.reload_library_keeping_search();
+    }
+
+    fn reload_library_keeping_search(&mut self) {
+        if self.active_search_query.is_some() {
+            self.browse_mode = BrowseMode::Library;
+            self.error_text = None;
+            self.items.clear();
+            self.textures.clear();
+            self.poster_jobs.clear();
+            self.selected_item_key = None;
+            self.next_start = 0;
+            self.total_size = 0;
+            self.load_more_movies();
+        } else {
+            self.reload_movies();
+        }
+    }
+
+    fn section_title(&self) -> String {
+        if self.active_search_query.is_some() {
+            return "搜索结果".to_owned();
+        }
+        match self.home_tab {
+            HomeTab::Continue => "继续观看".to_owned(),
+            HomeTab::Recent => "最近添加".to_owned(),
+            HomeTab::All => self.selected_library_title(),
+        }
+    }
+
+    fn section_count(&self) -> usize {
+        if self.browse_mode == BrowseMode::ContinueWatching {
+            self.items.len()
+        } else {
+            self.total_size.max(self.items.len())
         }
     }
 }
@@ -590,419 +691,7 @@ impl PosterLauncherApp {
 impl eframe::App for PosterLauncherApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.process_worker_events(ctx);
-
-        if let Some(item) = self.pending_delete_item.clone() {
-            egui::Window::new("Confirm Delete")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .show(ctx, |ui| {
-                    ui.label(format!("Delete \"{}\" from Plex?", item.title));
-                    ui.label(
-                        "This will ask the Plex server to delete the movie and its media files.",
-                    );
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
-                            self.pending_delete_item = None;
-                        }
-                        let delete_button =
-                            egui::Button::new("Delete").fill(egui::Color32::from_rgb(132, 36, 36));
-                        if ui
-                            .add_enabled(self.deleting_item_key.is_none(), delete_button)
-                            .clicked()
-                        {
-                            self.confirm_delete_item();
-                        }
-                    });
-                });
-        }
-
-        if let Some(item) = self.pending_mark_watched_item.clone() {
-            egui::Window::new("Confirm Watched")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .show(ctx, |ui| {
-                    ui.label(format!("Have you watched \"{}\"?", item.title));
-                    ui.label("Selecting Yes will mark this movie as watched in Plex.");
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("No").clicked() {
-                            self.pending_mark_watched_item = None;
-                        }
-                        if ui.button("Yes").clicked() {
-                            self.confirm_mark_watched();
-                        }
-                    });
-                });
-        }
-
-        egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
-            let mut any_text_field_has_focus = false;
-            let mut ime_purpose = egui::viewport::IMEPurpose::Normal;
-            let control_height = ui.spacing().interact_size.y;
-
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Plex URL");
-                let server_response = ui.add_sized(
-                    [300.0, control_height],
-                    egui::TextEdit::singleline(&mut self.config.server_url)
-                        .id_source("config_server_url"),
-                );
-                any_text_field_has_focus |= server_response.has_focus();
-
-                ui.label("Token");
-                let token_response = ui.add_sized(
-                    [220.0, control_height],
-                    egui::TextEdit::singleline(&mut self.config.token)
-                        .password(true)
-                        .id_source("config_token"),
-                );
-                if token_response.has_focus() {
-                    any_text_field_has_focus = true;
-                    ime_purpose = egui::viewport::IMEPurpose::Password;
-                }
-
-                ui.label("VLC Path");
-                let vlc_response = ui.add_sized(
-                    [280.0, control_height],
-                    egui::TextEdit::singleline(&mut self.config.vlc_path)
-                        .id_source("config_vlc_path"),
-                );
-                any_text_field_has_focus |= vlc_response.has_focus();
-
-                if server_response.gained_focus()
-                    || token_response.gained_focus()
-                    || vlc_response.gained_focus()
-                {
-                    touch_keyboard::show_touch_keyboard();
-                }
-
-                if ui.button("Save Config").clicked() {
-                    self.save_config();
-                }
-                if ui.button("Load Libraries").clicked() {
-                    self.load_sections();
-                }
-            });
-
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.label("Movie Library");
-                egui::ComboBox::from_id_source("library_selector")
-                    .selected_text(self.selected_library_title())
-                    .show_ui(ui, |ui| {
-                        for section in &self.libraries {
-                            ui.selectable_value(
-                                &mut self.config.selected_library_id,
-                                section.id.clone(),
-                                &section.title,
-                            );
-                        }
-                    });
-
-                if ui.button("Load Posters").clicked() {
-                    self.reload_movies();
-                }
-
-                if ui.button("Recent / Continue").clicked() {
-                    self.load_continue_watching();
-                }
-
-                if ui
-                    .add_enabled(
-                        self.browse_mode == BrowseMode::Library
-                            && !self.is_loading_movies
-                            && self.total_size > 0
-                            && self.items.len() < self.total_size,
-                        egui::Button::new("Load More"),
-                    )
-                    .clicked()
-                {
-                    self.load_more_movies();
-                }
-
-                ui.separator();
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.label("Search");
-                    let search_response = ui.add_sized(
-                        [220.0, control_height],
-                        egui::TextEdit::singleline(&mut self.search_text)
-                            .hint_text("Search whole library")
-                            .id_source("search_text"),
-                    );
-                    any_text_field_has_focus |= search_response.has_focus();
-
-                    if search_response.gained_focus() {
-                        touch_keyboard::show_touch_keyboard();
-                    }
-
-                    let submitted_with_enter = search_response.lost_focus()
-                        && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                    if submitted_with_enter {
-                        self.apply_search();
-                    }
-
-                    if ui.button("Search").clicked() {
-                        self.apply_search();
-                    }
-
-                    if ui.button("Clear").clicked() {
-                        self.search_text.clear();
-                        self.reload_movies();
-                    }
-
-                    ui.menu_button("History", |ui| {
-                        if self.search_text.trim().is_empty() {
-                            ui.add_enabled(false, egui::Button::new("Save current search"));
-                        } else if ui.button("Save current search").clicked() {
-                            self.remember_current_search();
-                            ui.close_menu();
-                        }
-
-                        ui.separator();
-
-                        if self.config.search_history.is_empty() {
-                            ui.label("No saved search history.");
-                        } else {
-                            let mut remove_index = None;
-                            let history_items = self.config.search_history.clone();
-                            egui::ScrollArea::vertical()
-                                .max_height(400.0)
-                                .show(ui, |ui| {
-                                    for (index, entry) in history_items.iter().enumerate() {
-                                        ui.horizontal(|ui| {
-                                            if ui.selectable_label(false, entry).clicked() {
-                                                self.search_text = entry.clone();
-                                                self.apply_search();
-                                                ui.close_menu();
-                                            }
-                                            if ui.small_button("Delete").clicked() {
-                                                remove_index = Some(index);
-                                            }
-                                        });
-                                    }
-                                });
-
-                            if let Some(index) = remove_index {
-                                self.delete_search_history_at(index);
-                            }
-                        }
-                    });
-                });
-
-                if ui.button("Close").clicked() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-            });
-
-            ctx.send_viewport_cmd(egui::ViewportCommand::IMEAllowed(any_text_field_has_focus));
-            ctx.send_viewport_cmd(egui::ViewportCommand::IMEPurpose(ime_purpose));
-        });
-
-        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-            if let Some(error) = self.error_text.as_ref() {
-                ui.colored_label(egui::Color32::LIGHT_RED, error);
-            } else {
-                ui.label(&self.status_text);
-            }
-        });
-
-        egui::SidePanel::right("details_panel")
-            .resizable(false)
-            .default_width(260.0)
-            .show(ctx, |ui| {
-                ui.heading("Details");
-                ui.separator();
-
-                if let Some(item) = self.selected_item().cloned() {
-                    let mut title_text = item.title.clone();
-                    ui.add(
-                        egui::TextEdit::multiline(&mut title_text)
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(2)
-                            .font(egui::TextStyle::Heading)
-                            .frame(false),
-                    );
-                    ui.label(format!(
-                        "Year: {}",
-                        item.year
-                            .map(|year| year.to_string())
-                            .unwrap_or_else(|| "-".to_owned())
-                    ));
-                    ui.label(format!("Rating Key: {}", item.rating_key));
-                    if let Some(section_title) = item.library_section_title.as_deref() {
-                        ui.label(format!("Section: {}", section_title));
-                    }
-                    if let Some(progress) = continue_progress_text(&item) {
-                        ui.label(format!("Progress: {}", progress));
-                    }
-                    ui.label(if item.view_count.unwrap_or_default() > 0 {
-                        "Status: Watched"
-                    } else {
-                        "Status: Unwatched"
-                    });
-                    ui.separator();
-                    let poster_is_loading = self.poster_jobs.contains(&item.rating_key);
-                    let poster_label = if poster_is_loading {
-                        "Updating..."
-                    } else {
-                        "Update Poster"
-                    };
-                    let is_watched = item.view_count.unwrap_or_default() > 0;
-                    let is_marking =
-                        self.marking_watched_item_key.as_deref() == Some(item.rating_key.as_str());
-                    let watched_label = if is_marking {
-                        "Marking..."
-                    } else if is_watched {
-                        "Watched"
-                    } else {
-                        "Mark Watched"
-                    };
-
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().button_padding.x = 4.0;
-                        if ui.button("Play").clicked() {
-                            self.play_item(&item);
-                        }
-                        if ui
-                            .add_enabled(!poster_is_loading, egui::Button::new(poster_label))
-                            .clicked()
-                        {
-                            self.refresh_poster(&item);
-                        }
-                        if ui
-                            .add_enabled(
-                                !is_watched
-                                    && !is_marking
-                                    && self.marking_watched_item_key.is_none(),
-                                egui::Button::new(watched_label),
-                            )
-                            .clicked()
-                        {
-                            self.request_mark_watched(item.clone());
-                        }
-                    });
-                    ui.add_space(8.0);
-                    let is_deleting =
-                        self.deleting_item_key.as_deref() == Some(item.rating_key.as_str());
-                    let delete_label = if is_deleting {
-                        "Deleting..."
-                    } else {
-                        "Delete From Plex"
-                    };
-                    let delete_button =
-                        egui::Button::new(delete_label).fill(egui::Color32::from_rgb(132, 36, 36));
-                    if ui
-                        .add_enabled(
-                            !is_deleting && self.deleting_item_key.is_none(),
-                            delete_button,
-                        )
-                        .clicked()
-                    {
-                        self.request_delete_item(item.clone());
-                    }
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.label(item.summary.as_deref().unwrap_or("No summary available."));
-                } else {
-                    ui.label("Select a poster to inspect and play it here.");
-                }
-            });
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(self.browse_mode_title()).strong());
-                ui.label(RichText::new(format!("Loaded {}", self.items.len())).strong());
-                ui.label(format!("Showing {}", self.items.len()));
-                if let Some(query) = self.active_search_query.as_deref() {
-                    ui.label(format!("Query: {}", query));
-                }
-                if self.is_loading_sections || self.is_loading_movies {
-                    ui.spinner();
-                }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let toggle = ui.add_enabled(
-                        self.browse_mode == BrowseMode::Library,
-                        egui::widgets::Checkbox::new(&mut self.sort_by_newest, "最新优先"),
-                    );
-                    if toggle.changed() && self.browse_mode == BrowseMode::Library {
-                        if self.active_search_query.is_some() {
-                            self.apply_search();
-                        } else {
-                            self.reload_movies();
-                        }
-                    }
-                });
-            });
-
-            ui.separator();
-
-            let filtered = if self.active_search_query.is_some() {
-                (0..self.items.len()).collect()
-            } else {
-                poster_grid::filtered_items(&self.items, "")
-            };
-            let columns = poster_grid::poster_columns(ui.available_width());
-            let can_load_more = self.browse_mode == BrowseMode::Library
-                && !self.is_loading_movies
-                && self.total_size > 0
-                && self.items.len() < self.total_size;
-
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for row in filtered.chunks(columns) {
-                    ui.horizontal_top(|ui| {
-                        for item_index in row {
-                            let item = self.items[*item_index].clone();
-                            self.ensure_poster_texture(ctx, &item);
-
-                            ui.vertical(|ui| {
-                                let poster_response =
-                                    if let Some(texture) = self.textures.get(&item.rating_key) {
-                                        ui.add(egui::ImageButton::new((
-                                            texture.id(),
-                                            egui::vec2(
-                                                poster_grid::POSTER_WIDTH,
-                                                poster_grid::POSTER_HEIGHT,
-                                            ),
-                                        )))
-                                    } else {
-                                        poster_grid::draw_placeholder(ui, &item.title)
-                                    };
-                                if item.view_count.unwrap_or_default() > 0 {
-                                    poster_grid::draw_watched_badge(ui, poster_response.rect);
-                                }
-                                let clicked = poster_response.clicked();
-
-                                ui.add_sized(
-                                    [poster_grid::POSTER_CARD_WIDTH - 12.0, 0.0],
-                                    egui::Label::new(egui::RichText::new(&item.title).size(14.0)),
-                                );
-                                if let Some(year) = item.year {
-                                    ui.small(year.to_string());
-                                } else if let Some(progress) = continue_progress_text(&item) {
-                                    ui.small(progress);
-                                } else {
-                                    ui.small("-");
-                                }
-                                if clicked {
-                                    self.selected_item_key = Some(item.rating_key.clone());
-                                }
-                                if ui.small_button("Play").clicked() {
-                                    self.play_item(&item);
-                                }
-                            });
-                        }
-                    });
-                    ui.add_space(12.0);
-                }
-
-                if can_load_more && ui.button("Load Next Page").clicked() {
-                    self.load_more_movies();
-                }
-            });
-        });
+        self.draw_ui(ctx);
     }
 }
 
@@ -1025,7 +714,7 @@ fn spawn_worker(cache: ThumbnailCache) -> (Sender<WorkerCommand>, Receiver<Worke
                     config,
                     section_id,
                     search_query,
-                    newest_first,
+                    sort,
                     start,
                     size,
                 } => {
@@ -1035,12 +724,12 @@ fn spawn_worker(cache: ThumbnailCache) -> (Sender<WorkerCommand>, Receiver<Worke
                                 client.search_movies_page(
                                     &section_id,
                                     query,
-                                    newest_first,
+                                    sort,
                                     start,
                                     size,
                                 )
                             } else {
-                                client.fetch_movies_page(&section_id, newest_first, start, size)
+                                client.fetch_movies_page(&section_id, sort, start, size)
                             }
                         })
                         .map_err(|error| error.to_string());
@@ -1087,13 +776,15 @@ fn spawn_worker(cache: ThumbnailCache) -> (Sender<WorkerCommand>, Receiver<Worke
                     config,
                     rating_key,
                     title,
+                    watched,
                 } => {
                     let result = PlexClient::new(config.server_url_trimmed(), config.token)
-                        .and_then(|client| client.mark_movie_watched(&rating_key))
+                        .and_then(|client| client.set_movie_watched(&rating_key, watched))
                         .map_err(|error| error.to_string());
                     let _ = event_tx.send(WorkerEvent::MovieMarkedWatched {
                         rating_key,
                         title,
+                        watched,
                         result,
                     });
                 }
@@ -1142,7 +833,7 @@ enum WorkerCommand {
         config: AppConfig,
         section_id: String,
         search_query: Option<String>,
-        newest_first: bool,
+        sort: MovieSort,
         start: usize,
         size: usize,
     },
@@ -1161,17 +852,9 @@ enum WorkerCommand {
         config: AppConfig,
         rating_key: String,
         title: String,
+        /// 目标状态：`true` 标为已看，`false` 标为未看。
+        watched: bool,
     },
-}
-
-fn continue_progress_text(item: &MediaItem) -> Option<String> {
-    let (view_offset, duration) = (item.view_offset?, item.duration?);
-    if duration == 0 {
-        return None;
-    }
-
-    let percent = ((view_offset as f64 / duration as f64) * 100.0).round() as i32;
-    Some(format!("{}%", percent.clamp(0, 100)))
 }
 
 fn format_resume_time(offset_ms: u64) -> String {
@@ -1206,6 +889,7 @@ enum WorkerEvent {
     MovieMarkedWatched {
         rating_key: String,
         title: String,
+        watched: bool,
         result: Result<(), String>,
     },
 }

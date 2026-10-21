@@ -7,7 +7,7 @@ use reqwest::Url;
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::models::{LibrarySection, MediaItem, MoviePage};
+use crate::models::{LibrarySection, MediaItem, MoviePage, MovieSort};
 
 /// 带 Token 的 Plex HTTP 客户端：拉取 XML、拼流地址与缩略图转码 URL。
 #[derive(Clone, Debug)]
@@ -48,26 +48,20 @@ impl PlexClient {
     pub fn fetch_movies_page(
         &self,
         section_id: &str,
-        newest_first: bool,
+        sort: MovieSort,
         start: usize,
         size: usize,
     ) -> Result<MoviePage, PlexError> {
         let path = format!("/library/sections/{section_id}/all");
         let start_value = start.to_string();
         let size_value = size.to_string();
-        let sort_value = if newest_first {
-            Some("updatedAt:desc")
-        } else {
-            None
-        };
-        let mut params = vec![
+        let sort_value = sort.plex_value();
+        let params = [
             ("type", "1"),
             ("X-Plex-Container-Start", start_value.as_str()),
             ("X-Plex-Container-Size", size_value.as_str()),
+            ("sort", sort_value),
         ];
-        if let Some(sort_value) = sort_value {
-            params.push(("sort", sort_value));
-        }
         let xml = self.get_xml(&path, &params)?;
 
         let container: MediaContainer = from_str(&xml)?;
@@ -92,27 +86,21 @@ impl PlexClient {
         &self,
         section_id: &str,
         query: &str,
-        newest_first: bool,
+        sort: MovieSort,
         start: usize,
         size: usize,
     ) -> Result<MoviePage, PlexError> {
         let path = format!("/library/sections/{section_id}/search");
         let start_value = start.to_string();
         let size_value = size.to_string();
-        let sort_value = if newest_first {
-            Some("updatedAt:desc")
-        } else {
-            None
-        };
-        let mut params = vec![
+        let sort_value = sort.plex_value();
+        let params = [
             ("type", "1"),
             ("query", query.trim()),
             ("X-Plex-Container-Start", start_value.as_str()),
             ("X-Plex-Container-Size", size_value.as_str()),
+            ("sort", sort_value),
         ];
-        if let Some(sort_value) = sort_value {
-            params.push(("sort", sort_value));
-        }
         let xml = self.get_xml(&path, &params)?;
 
         let container: MediaContainer = from_str(&xml)?;
@@ -270,10 +258,11 @@ impl PlexClient {
         Ok(())
     }
 
-    /// 将影片标记为已看。
-    pub fn mark_movie_watched(&self, rating_key: &str) -> Result<(), PlexError> {
+    /// 将影片标记为已看或未看。Plex 用 scrobble / unscrobble 切换观看次数。
+    pub fn set_movie_watched(&self, rating_key: &str, watched: bool) -> Result<(), PlexError> {
+        let path = if watched { "/:/scrobble" } else { "/:/unscrobble" };
         let url = self.absolute_url(
-            "/:/scrobble",
+            path,
             &[
                 ("key", rating_key),
                 ("identifier", "com.plexapp.plugins.library"),
