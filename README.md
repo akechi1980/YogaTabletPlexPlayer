@@ -14,7 +14,7 @@ Screenshots after launch. Night is iron gray; day is gray-white. The detail colu
 
 **夜间海报墙 / Night poster wall**
 
-![夜间海报墙 / Night poster wall](snap.jpg)
+![夜间海报墙 / Night poster wall](snap-night.jpg)
 
 **白天海报墙 / Day poster wall**
 
